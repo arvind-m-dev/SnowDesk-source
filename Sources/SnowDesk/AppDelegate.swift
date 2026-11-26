@@ -176,7 +176,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             window.backgroundColor = .clear
             window.hasShadow = false
             window.ignoresMouseEvents = true                      // fully click-through
-            window.level = .statusBar                             // above app windows, below menus
+            // Above app windows (and floating ones like picture-in-picture) but just below the Dock and menu bar,
+            // so an auto-hiding Dock still slides up and is never covered by snow.
+            window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.dockWindow)) - 1)
             window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
             window.isReleasedWhenClosed = false
 
