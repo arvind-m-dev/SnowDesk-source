@@ -22,6 +22,8 @@ final class DesktopDecor {
         if window == nil { show() }
         scene?.setFire(fire)
         scene?.setTrees(trees)
+        // Only the flames need a smooth frame rate; twinkling trees are fine at a low rate (saves CPU).
+        (window?.contentView as? SKView)?.preferredFramesPerSecond = fire ? 30 : 8
     }
 
     func rebuildForScreenChange(fire: Bool, trees: Int) {
@@ -173,7 +175,9 @@ final class DecorScene: SKScene {
         treesNode = nil
         treeStyle = style
         guard style > 0 else { return }
-        let root = style == 2 ? makeForest() : makeFewTrees()
+        let lights = SKNode()
+        let built = style == 2 ? makeForest(lights: lights) : makeFewTrees(lights: lights)
+        let root = flatten(built, lights: lights)
         root.alpha = 0
         root.run(.fadeIn(withDuration: 0.8))
         addChild(root)
@@ -185,7 +189,23 @@ final class DecorScene: SKScene {
         return (fx - 75 - 10)...(fx + 75 + 10)
     }
 
-    private func tree(_ variant: Int, height h: CGFloat, at x: CGFloat, y: CGFloat, tint: CGFloat, z: CGFloat, into root: SKNode) {
+    /// The trees never move, so draw them once into a single texture; only the twinkles stay live.
+    private func flatten(_ built: SKNode, lights: SKNode) -> SKNode {
+        let out = SKNode()
+        let band = CGRect(x: 0, y: 0, width: size.width, height: 170)
+        if let view, let tex = view.texture(from: built, crop: band) {
+            let sprite = SKSpriteNode(texture: tex, size: band.size)
+            sprite.anchorPoint = .zero
+            out.addChild(sprite)
+        } else {
+            out.addChild(built)
+        }
+        lights.zPosition = 1
+        out.addChild(lights)
+        return out
+    }
+
+    private func tree(_ variant: Int, height h: CGFloat, at x: CGFloat, y: CGFloat, tint: CGFloat, z: CGFloat, into root: SKNode, lights: SKNode) {
         let a = Models3D.pineAspect(variant)
         let t = SKSpriteNode(texture: Models3D.pine(variant: variant, height: 120), size: CGSize(width: h * a, height: h))
         t.anchorPoint = CGPoint(x: 0.5, y: 0.02)
@@ -202,13 +222,13 @@ final class DecorScene: SKScene {
                 g.position = CGPoint(x: x + .random(in: -h * 0.17...h * 0.17), y: y + .random(in: h * 0.2...h * 0.8))
                 g.zPosition = z + 0.0005
                 g.run(.repeatForever(.sequence([.fadeAlpha(to: 0.2, duration: .random(in: 0.6...1.4)), .fadeAlpha(to: 0.9, duration: .random(in: 0.6...1.4))])))
-                root.addChild(g)
+                lights.addChild(g)
             }
         }
     }
 
     /// Two little groves in the bottom corners.
-    private func makeFewTrees() -> SKNode {
+    private func makeFewTrees(lights: SKNode) -> SKNode {
         let root = SKNode()
         let w = size.width
         let right = (fireSpan?.lowerBound ?? w - 16)
@@ -218,7 +238,7 @@ final class DecorScene: SKScene {
         ]
         for (i, s) in spots.enumerated() {
             let z = CGFloat(i) * 0.01
-            tree(s.2, height: s.1, at: s.0, y: 4, tint: 0, z: z, into: root)
+            tree(s.2, height: s.1, at: s.0, y: 4, tint: 0, z: z, into: root, lights: lights)
             let drift = Shape.ellipse(CGRect(x: -s.1 * 0.32, y: -4, width: s.1 * 0.64, height: 10), fill: rgb(0.94, 0.96, 1))
             drift.position = CGPoint(x: s.0, y: 4)
             drift.zPosition = z + 0.001
@@ -228,7 +248,7 @@ final class DecorScene: SKScene {
     }
 
     /// A small snowy forest along the whole bottom edge: three rows, the far ones smaller and paler.
-    private func makeForest() -> SKNode {
+    private func makeForest(lights: SKNode) -> SKNode {
         let root = SKNode()
         let w = size.width
         func pick(front: Bool) -> Int {
@@ -264,7 +284,7 @@ final class DecorScene: SKScene {
                 let h = CGFloat.random(in: row.1)
                 if r > 0, let span = fireSpan, span.contains(x) { x = span.upperBound + 4; continue }
                 tree(pick(front: r == 2), height: h, at: x, y: row.0 + .random(in: -2...2), tint: row.3,
-                     z: row.4 + CGFloat(k % 50) * 0.002, into: root)
+                     z: row.4 + CGFloat(k % 50) * 0.002, into: root, lights: lights)
                 x += CGFloat.random(in: row.2)
                 k += 1
             }
