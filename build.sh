@@ -3,8 +3,10 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-swift build -c release
-BIN="$(swift build -c release --show-bin-path)/SnowDesk"
+# Universal binary: runs natively on Apple silicon and Intel Macs.
+ARCHS="--arch arm64 --arch x86_64"
+swift build -c release $ARCHS
+BIN="$(swift build -c release $ARCHS --show-bin-path)/SnowDesk"
 
 APP="SnowDesk.app"
 rm -rf "$APP"
@@ -33,3 +35,9 @@ PLIST
 
 codesign --force --deep --sign - "$APP"
 echo "Built $(pwd)/$APP"
+
+# Shareable zip (ditto keeps the app bundle intact)
+mkdir -p dist
+rm -f dist/SnowDesk.zip
+ditto -c -k --keepParent "$APP" dist/SnowDesk.zip
+echo "Zipped $(pwd)/dist/SnowDesk.zip"

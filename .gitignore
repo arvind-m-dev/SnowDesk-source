@@ -2,3 +2,4 @@
 .swiftpm/
 SnowDesk.app/
 .DS_Store
+dist/
