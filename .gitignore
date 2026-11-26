@@ -1,0 +1,4 @@
+.build/
+.swiftpm/
+SnowDesk.app/
+.DS_Store

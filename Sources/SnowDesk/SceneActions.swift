@@ -1,0 +1,68 @@
+import SpriteKit
+
+/// Menu actions and helpers used by the effects.
+extension SnowScene {
+    func callSanta() {
+        add(SantaEffect(scene: self))
+        Sound.shared.play(.bells, volume: 0.7)
+    }
+
+    func buryDesktop() {
+        guard effect(of: BuryEffect.self) == nil else { return }
+        add(BuryEffect(scene: self))
+    }
+
+    func sendPlough() {
+        guard effect(of: PloughEffect.self) == nil else { return }
+        add(PloughEffect(big: false, scene: self))
+    }
+
+    var isFrozen: Bool { effect(of: FrostEffect.self) != nil }
+
+    func toggleFrost() {
+        if let f = effect(of: FrostEffect.self) { f.thaw() } else { add(FrostEffect(scene: self)) }
+    }
+
+    func setFireplace(_ on: Bool) {
+        let existing = effects.compactMap { $0 as? FireplaceEffect }.first { !$0.isOut }
+        if on && existing == nil { add(FireplaceEffect(scene: self)) }
+        if !on { existing?.extinguish() }
+    }
+
+    func setLights(_ mode: LightsMode) {
+        let existing = effects.compactMap { $0 as? LightsEffect }.first { !$0.isFinishing }
+        if mode == .off {
+            existing?.finish()
+            return
+        }
+        if let e = existing { e.mode = mode } else { add(LightsEffect(mode: mode)) }
+    }
+
+    /// Takes snow from piles near p (the ⌥ snowball roller). Returns the amount collected (sum of column heights).
+    func collectSnow(around p: CGPoint, radius: CGFloat, depthBelowCursor: CGFloat) -> CGFloat {
+        var got: CGFloat = 0
+        var ledges: [(Pile, CGFloat, CGFloat)] = [(ground, 0, 0)]
+        for s in visibleWindows { ledges.append((s.pile, s.rect.minX, s.rect.maxY)) }
+        for (pile, minX, baseY) in ledges {
+            let rel = p.y - baseY
+            guard rel > -depthBelowCursor - 6, rel < pile.maxHeight + radius,
+                  p.x > minX - radius, p.x < minX + pile.width + radius else { continue }
+            let first = max(0, Int((p.x - minX - radius) / Pile.colW))
+            let last = min(pile.count - 1, Int((p.x - minX + radius) / Pile.colW))
+            guard first <= last else { continue }
+            for c in first...last where pile.exposed[c] {
+                let x = minX + (CGFloat(c) + 0.5) * Pile.colW
+                let off = abs(x - p.x) / radius
+                guard off < 1 else { continue }
+                let floor = max(0, rel - depthBelowCursor + off * off * 6)
+                let h = pile.height(at: c)
+                guard h > floor + 0.2 else { continue }
+                // Roll up a share each frame so the ball grows smoothly.
+                let take = (h - floor) * 0.5
+                pile.setHeight(c, h - take)
+                got += take
+            }
+        }
+        return got
+    }
+}
