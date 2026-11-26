@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 
 enum Intensity: Int, CaseIterable {
     case light = 0, medium, heavy
@@ -89,6 +89,12 @@ final class Settings {
         set { d.set(newValue, forKey: "treeStyle") }
     }
 
+    /// Display to use (CGDirectDisplayID), or 0 for all displays.
+    var displayID: UInt32 {
+        get { UInt32(truncatingIfNeeded: d.integer(forKey: "displayID")) }
+        set { d.set(Int(newValue), forKey: "displayID") }
+    }
+
     // Follow-the-weather city
     var cityName: String? {
         get { d.string(forKey: "cityName") }
@@ -116,4 +122,20 @@ final class Settings {
         get { d.array(forKey: "ornaments") as? [[String: Any]] ?? [] }
         set { d.set(newValue, forKey: "ornaments") }
     }
+}
+
+extension NSScreen {
+    var displayID: UInt32 { (deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0 }
+}
+
+enum Displays {
+    /// Screens SnowDesk draws on: the chosen display if it's connected, otherwise all of them.
+    static var active: [NSScreen] {
+        let id = Settings.shared.displayID
+        if id != 0, let s = NSScreen.screens.first(where: { $0.displayID == id }) { return [s] }
+        return NSScreen.screens
+    }
+
+    /// Where the fireplace, forest and cozy room go.
+    static var home: NSScreen? { active.first }
 }

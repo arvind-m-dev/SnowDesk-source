@@ -10,7 +10,7 @@ enum Wallpapers {
     }
 
     static func apply(_ index: Int, completion: @escaping (Error?) -> Void) {
-        let targets = NSScreen.screens.map { s in
+        let targets = Displays.active.map { s in
             (s, Int(s.frame.width * s.backingScaleFactor), Int(s.frame.height * s.backingScaleFactor))
         }
         DispatchQueue.global(qos: .userInitiated).async {

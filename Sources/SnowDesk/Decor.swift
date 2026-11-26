@@ -34,7 +34,7 @@ final class DesktopDecor {
     }
 
     private func show() {
-        guard let screen = NSScreen.screens.first else { return }
+        guard let screen = Displays.home else { return }
         let w = NSWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
         w.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)) + 2)
         w.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]

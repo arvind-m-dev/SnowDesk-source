@@ -118,7 +118,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Keep long-lived toggles across rebuilds.
         overlays.forEach { $0.window.orderOut(nil) }
         overlays = []
-        for (i, screen) in NSScreen.screens.enumerated() {
+        for (i, screen) in Displays.active.enumerated() {
             let frame = screen.frame
             let window = NSWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
             window.isOpaque = false
@@ -159,7 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Fireplace and trees sit on the desktop layer, behind all app windows.
     private func applyDecor() {
         decor.apply(fire: settings.fireplace, trees: settings.treeStyle)
-        primary?.setFireWarmth(at: decor.fireX.map { $0 + (NSScreen.screens.first?.frame.minX ?? 0) })
+        primary?.setFireWarmth(at: decor.fireX.map { $0 + (Displays.home?.frame.minX ?? 0) })
     }
 
     // MARK: - Menu (rebuilt every time it opens, so checkmarks are always current)
@@ -238,6 +238,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("Shake Off All Snow", #selector(clearSnow)))
 
         menu.addItem(.separator())
+        if NSScreen.screens.count > 1 {
+            let displays = NSMenu()
+            let chosen = Displays.active.count == 1 ? Displays.active[0].displayID : 0
+            let all = item("All Displays", #selector(pickDisplay(_:)), on: chosen == 0)
+            all.representedObject = NSNumber(value: 0)
+            displays.addItem(all)
+            displays.addItem(.separator())
+            for (i, s) in NSScreen.screens.enumerated() {
+                let it = item(s.localizedName + (i == 0 ? " (main)" : ""), #selector(pickDisplay(_:)), on: chosen == s.displayID)
+                it.representedObject = NSNumber(value: s.displayID)
+                displays.addItem(it)
+            }
+            menu.addItem(submenu("Show On", displays))
+        }
         menu.addItem(item("Sounds", #selector(toggleSounds), on: settings.sounds))
         menu.addItem(item("Santa Drops By Now and Then", #selector(toggleSantaVisits), on: settings.santaVisits))
         menu.addItem(item("Open at Login", #selector(toggleLogin), on: SMAppService.mainApp.status == .enabled))
@@ -361,6 +375,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             a.informativeText = error.localizedDescription
             a.runModal()
         }
+    }
+
+    @objc private func pickDisplay(_ sender: NSMenuItem) {
+        settings.displayID = (sender.representedObject as? NSNumber)?.uint32Value ?? 0
+        screensChanged()
     }
 
     @objc private func toggleSounds() { settings.sounds.toggle() }

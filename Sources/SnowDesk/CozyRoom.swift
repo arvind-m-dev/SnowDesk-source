@@ -29,7 +29,7 @@ final class CozyRoom: NSObject {
     var isShown: Bool { window != nil }
 
     func show() {
-        guard window == nil, let screen = NSScreen.screens.first else { return }
+        guard window == nil, let screen = Displays.home else { return }
         let w = NSWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
         w.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)) + 1)
         w.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
