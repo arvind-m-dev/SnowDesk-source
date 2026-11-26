@@ -216,7 +216,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(submenu("Christmas Lights", lights))
 
         let roomMenu = NSMenu()
-        roomMenu.addItem(item("Show Cozy Room on Desktop", #selector(toggleRoom), on: room.isShown))
+        roomMenu.addItem(item("Show Cozy Room on Desktop (covers wallpaper)", #selector(toggleRoom), on: room.isShown))
         roomMenu.addItem(item("Decorate My Tree…", #selector(decorate)))
         roomMenu.addItem(.separator())
         for (i, name) in CozyRoom.themes.enumerated() {
@@ -368,6 +368,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func pickWallpaper(_ sender: NSMenuItem) {
+        // The cozy room is drawn over the wallpaper, so it would hide the new one.
+        if room.isShown { room.hide() }
         Wallpapers.apply(sender.tag) { error in
             guard let error else { return }
             let a = NSAlert()
