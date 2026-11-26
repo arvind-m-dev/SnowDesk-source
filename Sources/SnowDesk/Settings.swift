@@ -83,6 +83,11 @@ final class Settings {
         set { d.set(newValue, forKey: "fireplace") }
     }
 
+    var trees: Bool {
+        get { bool("trees", true) }
+        set { d.set(newValue, forKey: "trees") }
+    }
+
     // Follow-the-weather city
     var cityName: String? {
         get { d.string(forKey: "cityName") }

@@ -23,10 +23,10 @@ extension SnowScene {
         if let f = effect(of: FrostEffect.self) { f.thaw() } else { add(FrostEffect(scene: self)) }
     }
 
-    func setFireplace(_ on: Bool) {
-        let existing = effects.compactMap { $0 as? FireplaceEffect }.first { !$0.isOut }
-        if on && existing == nil { add(FireplaceEffect(scene: self)) }
-        if !on { existing?.extinguish() }
+    /// Warmth from the desktop fireplace (pass nil when it's out).
+    func setFireWarmth(at x: CGFloat?) {
+        effects.compactMap { $0 as? WarmthEffect }.forEach { $0.extinguish() }
+        if let x { add(WarmthEffect(fireX: x - screenFrame.minX)) }
     }
 
     func setLights(_ mode: LightsMode) {

@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let settings = Settings.shared
     private let room = CozyRoom()
+    private let decor = DesktopDecor()
     private var clickMonitor: Any?
 
     private var scenes: [SnowScene] { overlays.map(\.scene) }
@@ -33,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         WeatherService.shared.onChange = { [weak self] kind in self?.setWeather(kind, fromService: true) }
         WeatherService.shared.start()
         if settings.roomShown { room.show() }
+        applyDecor()
         runDevArguments()
     }
 
@@ -69,7 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     case "plough": plough()
                     case "deep": scenes.forEach { sc in for c in 0..<sc.ground.count { sc.ground.add(c, 26 + 6 * sin(CGFloat(c) * 0.05)) } }
                     case "frost": freeze()
-                    case "fire": primary?.setFireplace(true)
+                    case "fire": decor.apply(fire: true, trees: settings.trees)
                     case "lights": scenes.forEach { $0.setLights(.twinkle) }
                     case "globe": globe()
                     case "room": room.show()
@@ -87,6 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     savePNG(img, URL(fileURLWithPath: dir).appendingPathComponent("overlay-\(i).png"), backdrop: true)
                 }
                 room.snapshot().map { savePNG($0, URL(fileURLWithPath: dir).appendingPathComponent("room.png")) }
+                decor.snapshot().map { savePNG($0, URL(fileURLWithPath: dir).appendingPathComponent("decor.png"), backdrop: true) }
             }
         }
     }
@@ -143,13 +146,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             overlays.append((window, scene))
 
             if settings.lightsMode != .off { scene.setLights(settings.lightsMode) }
-            if i == 0 && settings.fireplace { scene.setFireplace(true) }
         }
     }
 
     @objc private func screensChanged() {
         buildOverlays()
         room.rebuildForScreenChange()
+        decor.rebuildForScreenChange(fire: settings.fireplace, trees: settings.trees)
+        applyDecor()
+    }
+
+    /// Fireplace and trees sit on the desktop layer, behind all app windows.
+    private func applyDecor() {
+        decor.apply(fire: settings.fireplace, trees: settings.trees)
+        primary?.setFireWarmth(at: decor.fireX.map { $0 + (NSScreen.screens.first?.frame.minX ?? 0) })
     }
 
     // MARK: - Menu (rebuilt every time it opens, so checkmarks are always current)
@@ -189,6 +199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("Send in the Snowplough", #selector(plough)))
         menu.addItem(item("Freeze the Screen", #selector(freeze), on: primary?.isFrozen ?? false))
         menu.addItem(item("Light the Fireplace", #selector(toggleFire), on: settings.fireplace))
+        menu.addItem(item("Little Pine Trees", #selector(toggleTrees), on: settings.trees))
 
         let lights = NSMenu()
         for m in LightsMode.allCases {
@@ -315,7 +326,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleFire() {
         settings.fireplace.toggle()
-        primary?.setFireplace(settings.fireplace)
+        applyDecor()
+    }
+
+    @objc private func toggleTrees() {
+        settings.trees.toggle()
+        applyDecor()
     }
 
     @objc private func setLights(_ sender: NSMenuItem) {
