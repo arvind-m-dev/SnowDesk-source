@@ -10,8 +10,9 @@ final class DesktopDecor {
     /// Scene x of the fire on the main screen (for melting snow), when it's lit.
     var fireX: CGFloat? { scene?.fireX }
 
-    func apply(fire: Bool, trees: Bool) {
-        if !fire && !trees {
+    /// trees: 0 off, 1 a few, 2 a small forest along the bottom.
+    func apply(fire: Bool, trees: Int) {
+        if !fire && trees == 0 {
             window?.orderOut(nil)
             window = nil
             scene = nil
@@ -23,7 +24,7 @@ final class DesktopDecor {
         scene?.setTrees(trees)
     }
 
-    func rebuildForScreenChange(fire: Bool, trees: Bool) {
+    func rebuildForScreenChange(fire: Bool, trees: Int) {
         window?.orderOut(nil)
         window = nil
         scene = nil
@@ -61,6 +62,7 @@ final class DesktopDecor {
 final class DecorScene: SKScene {
     private var fireNode: SKNode?
     private var treesNode: SKNode?
+    private var treeStyle = 0
     private(set) var fireX: CGFloat?
 
     override func didMove(to view: SKView) {
@@ -146,6 +148,7 @@ final class DecorScene: SKScene {
             inner.run(.repeatForever(.sequence([.fadeAlpha(to: 0.25, duration: 0.18), .fadeAlpha(to: 0.4, duration: 0.22)])))
 
             root.position = CGPoint(x: size.width - fp.size.width / 2 - 24, y: 4)
+            root.zPosition = 10          // always in front of the forest
             root.alpha = 0
             root.run(.fadeIn(withDuration: 0.8))
             addChild(root)
@@ -159,50 +162,116 @@ final class DecorScene: SKScene {
             n.run(.sequence([.fadeOut(withDuration: 1), .removeFromParent()]))
             Sound.shared.stopCrackle()
         }
-        if treesNode != nil { setTrees(false); setTrees(true) }     // re-space trees around the fireplace
+        if treesNode != nil { let st = treeStyle; setTrees(0); setTrees(st) }     // re-space trees around the fireplace
     }
 
-    // MARK: Small trees (two little groves in the bottom corners)
+    // MARK: Trees
 
-    func setTrees(_ on: Bool) {
-        if on, treesNode == nil {
-            let root = SKNode()
-            let w = size.width
-            let fireLeft = fireNode != nil ? w - 24 - 150 - 8 : w - 16
-            // (x, height, variant) — left corner grove and a pair beside the fireplace
-            let spots: [(CGFloat, CGFloat, Int)] = [
-                (28, 70, 2), (62, 96, 1), (100, 62, 0), (132, 80, 0),
-                (fireLeft - 24, 84, 1), (fireLeft - 58, 60, 0),
-            ]
-            for (i, s) in spots.enumerated() {
-                let tex = Models3D.pine(variant: s.2, height: s.1)
-                let t = SKSpriteNode(texture: tex, size: CGSize(width: s.1 * 0.62, height: s.1))
-                t.anchorPoint = CGPoint(x: 0.5, y: 0.02)
-                t.position = CGPoint(x: s.0, y: 4)
-                t.zPosition = CGFloat(10 - i) * 0.01 + (s.1 < 70 ? 0.1 : 0)
-                root.addChild(t)
-                if s.2 == 1 {                                   // a faint twinkle on the lit trees
-                    for _ in 0..<5 {
-                        let g = glowSprite([rgb(1, 0.75, 0.3), rgb(1, 0.35, 0.3), rgb(0.5, 0.8, 1)].randomElement()!, size: 7)
-                        g.position = CGPoint(x: s.0 + .random(in: -s.1 * 0.18...s.1 * 0.18), y: 4 + .random(in: s.1 * 0.2...s.1 * 0.8))
-                        g.zPosition = t.zPosition + 0.005
-                        g.run(.repeatForever(.sequence([.fadeAlpha(to: 0.2, duration: .random(in: 0.6...1.4)), .fadeAlpha(to: 0.9, duration: .random(in: 0.6...1.4))])))
-                        root.addChild(g)
-                    }
-                }
-                // a little drift of snow at the foot
-                let drift = Shape.ellipse(CGRect(x: -s.1 * 0.32, y: -4, width: s.1 * 0.64, height: 10), fill: rgb(0.94, 0.96, 1))
-                drift.position = CGPoint(x: s.0, y: 4)
-                drift.zPosition = t.zPosition + 0.006
-                root.addChild(drift)
-            }
-            root.alpha = 0
-            root.run(.fadeIn(withDuration: 0.8))
-            addChild(root)
-            treesNode = root
-        } else if !on, let n = treesNode {
-            treesNode = nil
-            n.removeFromParent()
+    func setTrees(_ style: Int) {
+        guard style != treeStyle || (style > 0) != (treesNode != nil) else { return }
+        treesNode?.removeFromParent()
+        treesNode = nil
+        treeStyle = style
+        guard style > 0 else { return }
+        let root = style == 2 ? makeForest() : makeFewTrees()
+        root.alpha = 0
+        root.run(.fadeIn(withDuration: 0.8))
+        addChild(root)
+        treesNode = root
+    }
+
+    private var fireSpan: ClosedRange<CGFloat>? {
+        guard let fx = fireX else { return nil }
+        return (fx - 75 - 10)...(fx + 75 + 10)
+    }
+
+    private func tree(_ variant: Int, height h: CGFloat, at x: CGFloat, y: CGFloat, tint: CGFloat, z: CGFloat, into root: SKNode) {
+        let a = Models3D.pineAspect(variant)
+        let t = SKSpriteNode(texture: Models3D.pine(variant: variant, height: 120), size: CGSize(width: h * a, height: h))
+        t.anchorPoint = CGPoint(x: 0.5, y: 0.02)
+        t.position = CGPoint(x: x, y: y)
+        t.zPosition = z
+        if tint > 0 {                       // distant trees fade into the cold air
+            t.color = rgb(0.55, 0.64, 0.82)
+            t.colorBlendFactor = tint
         }
+        root.addChild(t)
+        if variant == 1 && tint < 0.3 {     // a faint twinkle on the lit trees
+            for _ in 0..<4 {
+                let g = glowSprite([rgb(1, 0.75, 0.3), rgb(1, 0.35, 0.3), rgb(0.5, 0.8, 1)].randomElement()!, size: max(5, h * 0.08))
+                g.position = CGPoint(x: x + .random(in: -h * 0.17...h * 0.17), y: y + .random(in: h * 0.2...h * 0.8))
+                g.zPosition = z + 0.0005
+                g.run(.repeatForever(.sequence([.fadeAlpha(to: 0.2, duration: .random(in: 0.6...1.4)), .fadeAlpha(to: 0.9, duration: .random(in: 0.6...1.4))])))
+                root.addChild(g)
+            }
+        }
+    }
+
+    /// Two little groves in the bottom corners.
+    private func makeFewTrees() -> SKNode {
+        let root = SKNode()
+        let w = size.width
+        let right = (fireSpan?.lowerBound ?? w - 16)
+        let spots: [(CGFloat, CGFloat, Int)] = [
+            (28, 70, 2), (62, 96, 1), (100, 62, 0), (132, 80, 3),
+            (right - 24, 84, 1), (right - 58, 60, 0),
+        ]
+        for (i, s) in spots.enumerated() {
+            let z = CGFloat(i) * 0.01
+            tree(s.2, height: s.1, at: s.0, y: 4, tint: 0, z: z, into: root)
+            let drift = Shape.ellipse(CGRect(x: -s.1 * 0.32, y: -4, width: s.1 * 0.64, height: 10), fill: rgb(0.94, 0.96, 1))
+            drift.position = CGPoint(x: s.0, y: 4)
+            drift.zPosition = z + 0.001
+            root.addChild(drift)
+        }
+        return root
+    }
+
+    /// A small snowy forest along the whole bottom edge: three rows, the far ones smaller and paler.
+    private func makeForest() -> SKNode {
+        let root = SKNode()
+        let w = size.width
+        func pick(front: Bool) -> Int {
+            let r = Int.random(in: 0..<12)
+            if front && r == 0 { return 1 }           // an occasional lit tree up front
+            return r < 5 ? 0 : (r < 9 ? 2 : 3)
+        }
+        func ground(height: CGFloat, color: NSColor, z: CGFloat) {
+            let p = CGMutablePath()
+            p.move(to: CGPoint(x: 0, y: 0))
+            let seed = CGFloat.random(in: 0...100)
+            var x: CGFloat = 0
+            while x <= w + 8 {
+                p.addLine(to: CGPoint(x: x, y: height + 5 * sin(x * 0.012 + seed) + 3 * sin(x * 0.037 + seed * 2)))
+                x += 8
+            }
+            p.addLine(to: CGPoint(x: w, y: 0))
+            p.closeSubpath()
+            let n = Shape.node(p, fill: color)
+            n.zPosition = z
+            root.addChild(n)
+        }
+        // (base y, height range, spacing, tint, z)
+        let rows: [(CGFloat, ClosedRange<CGFloat>, ClosedRange<CGFloat>, CGFloat, CGFloat)] = [
+            (30, 34...50, 12...22, 0.5, 0.0),
+            (16, 46...68, 18...32, 0.25, 0.2),
+            (2, 62...100, 30...58, 0.0, 0.4),
+        ]
+        for (r, row) in rows.enumerated() {
+            var x = CGFloat.random(in: -12...8)
+            var k = 0
+            while x < w + 20 {
+                let h = CGFloat.random(in: row.1)
+                if r > 0, let span = fireSpan, span.contains(x) { x = span.upperBound + 4; continue }
+                tree(pick(front: r == 2), height: h, at: x, y: row.0 + .random(in: -2...2), tint: row.3,
+                     z: row.4 + CGFloat(k % 50) * 0.002, into: root)
+                x += CGFloat.random(in: row.2)
+                k += 1
+            }
+            // snowy ground in front of each row's trunks
+            ground(height: row.0 + 6, color: r == 0 ? rgb(0.80, 0.85, 0.94) : (r == 1 ? rgb(0.88, 0.91, 0.97) : rgb(0.95, 0.97, 1)),
+                   z: row.4 + 0.15)
+        }
+        return root
     }
 }

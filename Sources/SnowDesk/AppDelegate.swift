@@ -71,7 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     case "plough": plough()
                     case "deep": scenes.forEach { sc in for c in 0..<sc.ground.count { sc.ground.add(c, 26 + 6 * sin(CGFloat(c) * 0.05)) } }
                     case "frost": freeze()
-                    case "fire": decor.apply(fire: true, trees: settings.trees)
+                    case "fire": decor.apply(fire: true, trees: settings.treeStyle)
                     case "lights": scenes.forEach { $0.setLights(.twinkle) }
                     case "globe": globe()
                     case "room": room.show()
@@ -152,13 +152,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func screensChanged() {
         buildOverlays()
         room.rebuildForScreenChange()
-        decor.rebuildForScreenChange(fire: settings.fireplace, trees: settings.trees)
+        decor.rebuildForScreenChange(fire: settings.fireplace, trees: settings.treeStyle)
         applyDecor()
     }
 
     /// Fireplace and trees sit on the desktop layer, behind all app windows.
     private func applyDecor() {
-        decor.apply(fire: settings.fireplace, trees: settings.trees)
+        decor.apply(fire: settings.fireplace, trees: settings.treeStyle)
         primary?.setFireWarmth(at: decor.fireX.map { $0 + (NSScreen.screens.first?.frame.minX ?? 0) })
     }
 
@@ -199,7 +199,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("Send in the Snowplough", #selector(plough)))
         menu.addItem(item("Freeze the Screen", #selector(freeze), on: primary?.isFrozen ?? false))
         menu.addItem(item("Light the Fireplace", #selector(toggleFire), on: settings.fireplace))
-        menu.addItem(item("Little Pine Trees", #selector(toggleTrees), on: settings.trees))
+        let trees = NSMenu()
+        for (i, name) in ["Off", "A Few Trees", "Small Forest"].enumerated() {
+            let it = item(name, #selector(setTrees(_:)), on: settings.treeStyle == i)
+            it.tag = i
+            trees.addItem(it)
+        }
+        menu.addItem(submenu("Trees Along the Bottom", trees))
 
         let lights = NSMenu()
         for m in LightsMode.allCases {
@@ -329,8 +335,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         applyDecor()
     }
 
-    @objc private func toggleTrees() {
-        settings.trees.toggle()
+    @objc private func setTrees(_ sender: NSMenuItem) {
+        settings.treeStyle = sender.tag
         applyDecor()
     }
 

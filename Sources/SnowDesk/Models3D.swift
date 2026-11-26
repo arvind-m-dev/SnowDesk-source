@@ -192,7 +192,10 @@ enum Models3D {
 
     private static var treeCache: [Int: SKTexture] = [:]
 
-    /// Snow-dusted pine. Variant 0: plain, 1: with tiny warm lights, 2: tall and slim.
+    /// Width ÷ height of each tree texture.
+    static func pineAspect(_ variant: Int) -> CGFloat { variant == 3 ? 0.74 : 0.62 }
+
+    /// Snow-dusted pine. Variant 0: plain, 1: with tiny warm lights, 2: tall and slim, 3: short round fir.
     static func pine(variant: Int, height: CGFloat) -> SKTexture {
         let key = variant * 10_000 + Int(height)
         if let t = treeCache[key] { return t }
@@ -201,14 +204,16 @@ enum Models3D {
         scene.lightingEnvironment.intensity = 0.5
         let tree = SCNNode()
         scene.rootNode.addChildNode(tree)
-        let slim: CGFloat = variant == 2 ? 0.75 : 1
+        let slim: CGFloat = variant == 2 ? 0.75 : (variant == 3 ? 1.2 : 1)
         let needles = pbr(rgb(0.09, 0.30, 0.17), rough: 0.85)
         let snow = pbr(rgb(0.95, 0.97, 1), rough: 0.6)
         let trunk = SCNNode(geometry: SCNCylinder(radius: 0.08, height: 0.4))
         trunk.geometry?.firstMaterial = pbr(rgb(0.32, 0.2, 0.11), rough: 0.9)
         trunk.position = SCNVector3(0, 0.2, 0)
         tree.addChildNode(trunk)
-        let tiers: [(CGFloat, CGFloat, CGFloat)] = [(0.62, 0.9, 0.3), (0.5, 0.8, 0.75), (0.38, 0.7, 1.15), (0.25, 0.55, 1.5)]
+        let tiers: [(CGFloat, CGFloat, CGFloat)] = variant == 3
+            ? [(0.62, 0.8, 0.25), (0.5, 0.7, 0.62), (0.36, 0.6, 0.96)]
+            : [(0.62, 0.9, 0.3), (0.5, 0.8, 0.75), (0.38, 0.7, 1.15), (0.25, 0.55, 1.5)]
         var lights: [SCNVector3] = []
         for (r, h, y) in tiers {
             let cone = SCNNode(geometry: SCNCone(topRadius: 0, bottomRadius: r * slim, height: h))
@@ -251,7 +256,7 @@ enum Models3D {
         cam.position = SCNVector3(0, 1.08, 10)
         cam.eulerAngles.x = -0.02
         scene.rootNode.addChildNode(cam)
-        let tex = render(scene, camera: cam, size: CGSize(width: height * 0.62, height: height))
+        let tex = render(scene, camera: cam, size: CGSize(width: height * pineAspect(variant), height: height))
         treeCache[key] = tex
         return tex
     }
