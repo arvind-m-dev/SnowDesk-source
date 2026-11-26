@@ -1,6 +1,8 @@
 import AppKit
 import SpriteKit
 import ServiceManagement
+import SceneKit
+import Metal
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var overlays: [(window: NSWindow, scene: SnowScene)] = []
@@ -52,6 +54,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSApp.terminate(nil)
             return
         }
+        if let path = value("--render-snowcat") {
+            let frames = Snowcat3D(width: 420).frames()
+            if let cg = frames.first?.cgImage() { savePNG(cg, URL(fileURLWithPath: path)) }
+            NSApp.terminate(nil)
+            return
+        }
         if let list = value("--demo") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [self] in
                 for a in list.split(separator: ",").map(String.init) {
@@ -59,6 +67,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     case "santa": primary?.callSanta()
                     case "bury": bury()
                     case "plough": plough()
+                    case "deep": scenes.forEach { sc in for c in 0..<sc.ground.count { sc.ground.add(c, 26 + 6 * sin(CGFloat(c) * 0.05)) } }
                     case "frost": freeze()
                     case "fire": primary?.setFireplace(true)
                     case "lights": scenes.forEach { $0.setLights(.twinkle) }

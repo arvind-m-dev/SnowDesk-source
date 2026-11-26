@@ -8,6 +8,8 @@ final class Pile {
     private(set) var heights: [CGFloat]
     var exposed: [Bool]
     var maxHeight: CGFloat
+    /// Steepest step between neighbouring columns before snow slumps (raised while ploughing so walls hold).
+    var maxSlope: CGFloat = 1.3
     let node = SKShapeNode()
     var dirty = true
 
@@ -137,7 +139,6 @@ final class Pile {
     func settle(spillsAtEdges: Bool) -> [CGFloat] {
         let n = heights.count
         guard n > 1 else { return [] }
-        let maxSlope: CGFloat = 1.3
         for _ in 0..<2 {
             for i in 0..<(n - 1) where exposed[i] && exposed[i + 1] {
                 let d = heights[i] - heights[i + 1]

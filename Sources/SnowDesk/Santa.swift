@@ -1,124 +1,377 @@
 import SpriteKit
 
-/// A sleigh and four reindeer flying across the top of the screen; drops a present on a window.
+/// Gives every node in a rig a z order that follows the order parts were added (back to front),
+/// because the overlay renders with `ignoresSiblingOrder`.
+func layerInOrder(_ node: SKNode, step: CGFloat = 0.01) {
+    for (i, c) in node.children.enumerated() {
+        c.zPosition = CGFloat(i + 1) * step
+        layerInOrder(c, step: step / 30)
+    }
+}
+
+private func gradientTexture(_ top: NSColor, _ bottom: NSColor) -> SKTexture {
+    Tex.make(4, 64) { ctx, r in Tex.linear(ctx, [bottom, top], [0, 1], from: .zero, to: CGPoint(x: 0, y: r.maxY)) }
+}
+
+// MARK: - Flight path
+
+/// A smooth random route (Catmull-Rom spline through random waypoints) walked at constant speed.
+struct FlightPath {
+    private var pts: [CGPoint] = []
+    private var cum: [CGFloat] = []
+    var length: CGFloat { cum.last ?? 0 }
+
+    init(through controls: [CGPoint]) {
+        let c = [controls[0]] + controls + [controls[controls.count - 1]]
+        for i in 1..<(c.count - 2) {
+            let p0 = c[i - 1], p1 = c[i], p2 = c[i + 1], p3 = c[i + 2]
+            for k in 0..<24 {
+                let t = CGFloat(k) / 24, t2 = t * t, t3 = t2 * t
+                func f(_ a: CGFloat, _ b: CGFloat, _ cc: CGFloat, _ d: CGFloat) -> CGFloat {
+                    0.5 * (2 * b + (-a + cc) * t + (2 * a - 5 * b + 4 * cc - d) * t2 + (-a + 3 * b - 3 * cc + d) * t3)
+                }
+                pts.append(CGPoint(x: f(p0.x, p1.x, p2.x, p3.x), y: f(p0.y, p1.y, p2.y, p3.y)))
+            }
+        }
+        pts.append(controls[controls.count - 1])
+        cum = [0]
+        for i in 1..<pts.count { cum.append(cum[i - 1] + hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y)) }
+    }
+
+    /// Position and heading at distance d (before the start it continues straight back off-screen).
+    func point(at d: CGFloat) -> (CGPoint, CGFloat) {
+        if d <= 0 {
+            let a = atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x)
+            return (CGPoint(x: pts[0].x + cos(a) * d, y: pts[0].y + sin(a) * d), a)
+        }
+        if d >= length {
+            let n = pts.count
+            let a = atan2(pts[n - 1].y - pts[n - 2].y, pts[n - 1].x - pts[n - 2].x)
+            let e = d - length
+            return (CGPoint(x: pts[n - 1].x + cos(a) * e, y: pts[n - 1].y + sin(a) * e), a)
+        }
+        var lo = 0, hi = cum.count - 1
+        while hi - lo > 1 { let m = (lo + hi) / 2; if cum[m] <= d { lo = m } else { hi = m } }
+        let u = (d - cum[lo]) / max(0.0001, cum[hi] - cum[lo])
+        let p = CGPoint(x: pts[lo].x + (pts[hi].x - pts[lo].x) * u, y: pts[lo].y + (pts[hi].y - pts[lo].y) * u)
+        return (p, atan2(pts[hi].y - pts[lo].y, pts[hi].x - pts[lo].x))
+    }
+
+    /// Enters from one side, wanders through random waypoints (sometimes doubling back), leaves the other side.
+    static func random(size: CGSize, through drop: CGPoint?) -> FlightPath {
+        let w = size.width, h = size.height
+        let dir: CGFloat = Bool.random() ? 1 : -1
+        func y() -> CGFloat { .random(in: (h * 0.58)...(h * 0.86)) }
+        var p: [CGPoint] = [CGPoint(x: dir > 0 ? -200 : w + 200, y: y())]
+        let n = Int.random(in: 3...5)
+        for k in 1...n {
+            let u = CGFloat(k) / CGFloat(n + 1) + .random(in: -0.07...0.07)
+            p.append(CGPoint(x: dir > 0 ? w * u : w * (1 - u), y: y()))
+            if Int.random(in: 0..<10) < 3 && k < n {          // swing back for a moment
+                let last = p[p.count - 1]
+                p.append(CGPoint(x: last.x - dir * w * .random(in: 0.12...0.22), y: min(h * 0.92, max(h * 0.45, last.y + .random(in: -0.15...0.15) * h))))
+            }
+        }
+        if let d = drop, let i = (1..<p.count).min(by: { abs(p[$0].x - d.x) < abs(p[$1].x - d.x) }) {
+            p[i] = CGPoint(x: d.x, y: min(h * 0.86, max(h * 0.5, d.y + .random(in: 110...200))))
+        }
+        p.append(CGPoint(x: dir > 0 ? w + 500 : -500, y: y()))
+        return FlightPath(through: p)
+    }
+}
+
+// MARK: - Rigs
+
+/// A reindeer built from jointed parts: torso, neck → head (antlers, ear), tail, and four legs,
+/// each with a hip and a knee so it gallops.
+final class Reindeer {
+    let root = SKNode()
+    private let neck = SKNode()
+    private let head = SKNode()
+    private let tail = SKNode()
+    private var legs: [(hip: SKNode, knee: SKNode, offset: CGFloat, front: Bool)] = []
+    let chest = CGPoint(x: 15, y: 1)
+
+    private static let coatTex = gradientTexture(rgb(0.62, 0.42, 0.24), rgb(0.40, 0.25, 0.13))
+
+    init(lead: Bool) {
+        let coat = rgb(0.52, 0.33, 0.18), far = rgb(0.34, 0.21, 0.11), belly = rgb(0.85, 0.74, 0.58)
+        addLeg(x: 12, front: true, color: far, offset: 0.5)
+        addLeg(x: -12, front: false, color: far, offset: .pi + 0.5)
+
+        tail.position = CGPoint(x: -17, y: 4)
+        tail.addChild(Shape.ellipse(CGRect(x: -7, y: -2, width: 8, height: 5), fill: belly))
+        root.addChild(tail)
+
+        let torso = Shape.ellipse(CGRect(x: -19, y: -8, width: 38, height: 16), fill: .white)
+        torso.fillTexture = Reindeer.coatTex
+        root.addChild(torso)
+        root.addChild(Shape.ellipse(CGRect(x: -12, y: -8, width: 24, height: 7), fill: belly.withAlphaComponent(0.8)))
+
+        neck.position = CGPoint(x: 13, y: 3)
+        let neckShape = Shape.poly([CGPoint(x: -4, y: -3), CGPoint(x: 4, y: -4), CGPoint(x: 10, y: 13), CGPoint(x: 3, y: 15)], fill: .white)
+        neckShape.fillTexture = Reindeer.coatTex
+        neck.addChild(neckShape)
+        neck.addChild(Shape.rect(CGRect(x: -4, y: -1, width: 9, height: 3.5), radius: 1.5, fill: rgb(0.75, 0.1, 0.12)))   // collar
+        neck.addChild(Shape.ellipse(CGRect(x: 0, y: -3.5, width: 3.6, height: 3.6), fill: rgb(1, 0.82, 0.3)))             // bell
+        head.position = CGPoint(x: 7, y: 14)
+        let antlerColor = rgb(0.86, 0.76, 0.56)
+        for (dx, col) in [(-2.0, antlerColor.blended(withFraction: 0.25, of: .black)!), (1.0, antlerColor)] {
+            let antler = SKNode()
+            antler.position = CGPoint(x: dx, y: 3)
+            antler.addChild(Shape.line([CGPoint(x: 0, y: 0), CGPoint(x: -2, y: 8), CGPoint(x: -7, y: 13)], color: col, width: 1.7))
+            antler.addChild(Shape.line([CGPoint(x: -1, y: 5), CGPoint(x: 3, y: 10)], color: col, width: 1.4))
+            antler.addChild(Shape.line([CGPoint(x: -2, y: 8), CGPoint(x: -1, y: 14)], color: col, width: 1.3))
+            antler.addChild(Shape.line([CGPoint(x: -4.5, y: 10.5), CGPoint(x: -8, y: 9)], color: col, width: 1.2))
+            head.addChild(antler)
+        }
+        let skull = Shape.ellipse(CGRect(x: -3, y: -4, width: 14, height: 9), fill: .white)
+        skull.fillTexture = Reindeer.coatTex
+        head.addChild(skull)
+        head.addChild(Shape.ellipse(CGRect(x: 7, y: -4, width: 8, height: 6), fill: rgb(0.68, 0.5, 0.33)))   // muzzle
+        let ear = Shape.ellipse(CGRect(x: -2, y: -1.5, width: 7, height: 3), fill: coat)
+        ear.position = CGPoint(x: 0, y: 3)
+        ear.zRotation = 0.5
+        head.addChild(ear)
+        head.addChild(Shape.ellipse(CGRect(x: 4, y: 0.5, width: 2.4, height: 2.4), fill: rgb(0.08, 0.06, 0.05)))
+        head.addChild(Shape.ellipse(CGRect(x: 4.8, y: 1.6, width: 0.8, height: 0.8), fill: .white))
+        if lead {
+            let glow = glowSprite(rgb(1, 0.15, 0.1), size: 20)
+            glow.position = CGPoint(x: 15, y: -1)
+            glow.run(.repeatForever(.sequence([.fadeAlpha(to: 0.45, duration: 0.45), .fadeAlpha(to: 1, duration: 0.45)])))
+            head.addChild(glow)
+            head.addChild(Shape.ellipse(CGRect(x: 12.5, y: -3.2, width: 4.6, height: 4.6), fill: rgb(1, 0.18, 0.12)))
+        } else {
+            head.addChild(Shape.ellipse(CGRect(x: 13, y: -2.5, width: 3, height: 2.5), fill: rgb(0.15, 0.1, 0.08)))
+        }
+        neck.addChild(head)
+        root.addChild(neck)
+
+        addLeg(x: 14, front: true, color: coat, offset: 0)
+        addLeg(x: -10, front: false, color: coat, offset: .pi)
+        layerInOrder(root)
+    }
+
+    private func addLeg(x: CGFloat, front: Bool, color: NSColor, offset: CGFloat) {
+        let hip = SKNode()
+        hip.position = CGPoint(x: x, y: -3)
+        hip.addChild(Shape.rect(CGRect(x: -2.8, y: -11, width: 5.6, height: 13), radius: 2.6, fill: color))
+        let knee = SKNode()
+        knee.position = CGPoint(x: 0, y: -10)
+        knee.addChild(Shape.rect(CGRect(x: -1.6, y: -10, width: 3.2, height: 11), radius: 1.5, fill: color))
+        knee.addChild(Shape.rect(CGRect(x: -2.1, y: -12.5, width: 4.2, height: 3), radius: 1, fill: rgb(0.2, 0.13, 0.08)))
+        hip.addChild(knee)
+        root.addChild(hip)
+        legs.append((hip, knee, offset, front))
+    }
+
+    /// Gallop pose for phase φ.
+    func animate(_ phi: CGFloat) {
+        for l in legs {
+            let a = phi + l.offset
+            l.hip.zRotation = (l.front ? 0.7 : 0.55) * sin(a) + (l.front ? 0.2 : -0.1)
+            l.knee.zRotation = l.front ? -1.0 * max(0, sin(a + 0.9)) : 0.85 * max(0, sin(a - 0.7))
+        }
+        neck.zRotation = 0.12 * sin(phi + 1.2)
+        head.zRotation = -0.1 * sin(phi + 1.2)
+        tail.zRotation = 0.4 * sin(phi * 2)
+    }
+}
+
+/// The sleigh with Santa: shaded body and runners, a sack of presents, and Santa with a waving arm and a floppy hat.
+final class SleighRig {
+    let root = SKNode()
+    private let santa = SKNode()
+    private let shoulder = SKNode()
+    private let elbow = SKNode()
+    private let hatTip = SKNode()
+    let front = CGPoint(x: 40, y: 18)
+
+    init() {
+        let red = rgb(0.80, 0.10, 0.12), gold = rgb(0.95, 0.78, 0.30), skin = rgb(1, 0.83, 0.70)
+        // Sack with presents peeking out
+        root.addChild(Shape.ellipse(CGRect(x: -44, y: 14, width: 30, height: 32), fill: rgb(0.55, 0.38, 0.22)))
+        for (x, y, c) in [(-40.0, 38.0, rgb(0.2, 0.5, 0.3)), (-31.0, 41.0, rgb(0.2, 0.35, 0.75)), (-24.0, 36.0, rgb(0.95, 0.78, 0.25))] {
+            let b = Shape.rect(CGRect(x: x, y: y, width: 9, height: 9), radius: 1, fill: c)
+            b.zRotation = .random(in: -0.3...0.3)
+            root.addChild(b)
+        }
+        // Santa
+        santa.position = CGPoint(x: -4, y: 16)
+        let coat = Shape.ellipse(CGRect(x: -13, y: 0, width: 26, height: 28), fill: .white)
+        coat.fillTexture = gradientTexture(rgb(0.92, 0.18, 0.18), rgb(0.6, 0.05, 0.08))
+        santa.addChild(coat)
+        santa.addChild(Shape.rect(CGRect(x: -13, y: 7, width: 26, height: 4), fill: rgb(0.1, 0.08, 0.08)))
+        santa.addChild(Shape.rect(CGRect(x: -2.5, y: 6.5, width: 5, height: 5), radius: 1, fill: gold))
+        santa.addChild(Shape.ellipse(CGRect(x: -6, y: 23, width: 15, height: 14), fill: skin))
+        santa.addChild(Shape.ellipse(CGRect(x: -6, y: 14, width: 17, height: 17), fill: .white))          // beard
+        santa.addChild(Shape.ellipse(CGRect(x: 0, y: 25, width: 9, height: 4), fill: rgb(0.95, 0.95, 0.95))) // moustache
+        santa.addChild(Shape.ellipse(CGRect(x: 6, y: 28.5, width: 2.2, height: 2.2), fill: .black))
+        santa.addChild(Shape.ellipse(CGRect(x: 8, y: 26, width: 4, height: 3.5), fill: rgb(1, 0.6, 0.55)))   // cheek/nose
+        let hat = SKNode()
+        hat.position = CGPoint(x: 1, y: 35)
+        hatTip.position = CGPoint(x: 0, y: 0)
+        hatTip.addChild(Shape.poly([CGPoint(x: -8, y: 0), CGPoint(x: 9, y: 0), CGPoint(x: -9, y: 15)], fill: red))
+        hatTip.addChild(Shape.ellipse(CGRect(x: -13, y: 12, width: 7, height: 7), fill: .white))
+        hat.addChild(hatTip)
+        hat.addChild(Shape.rect(CGRect(x: -9, y: -3, width: 19, height: 5), radius: 2.5, fill: .white))
+        santa.addChild(hat)
+        shoulder.position = CGPoint(x: 5, y: 20)
+        shoulder.addChild(Shape.rect(CGRect(x: -3, y: -10, width: 6, height: 11), radius: 3, fill: red))
+        elbow.position = CGPoint(x: 0, y: -9)
+        elbow.addChild(Shape.rect(CGRect(x: -2.6, y: -9, width: 5.2, height: 10), radius: 2.6, fill: red))
+        elbow.addChild(Shape.ellipse(CGRect(x: -3.5, y: -12.5, width: 7, height: 6), fill: rgb(0.1, 0.35, 0.18)))   // mitten
+        shoulder.addChild(elbow)
+        santa.addChild(shoulder)
+        root.addChild(santa)
+
+        // Sleigh body (shaded) with gold trim and a curled front
+        let body = Shape.poly([CGPoint(x: -46, y: 2), CGPoint(x: 26, y: 2), CGPoint(x: 38, y: 10), CGPoint(x: 43, y: 22),
+                               CGPoint(x: 37, y: 28), CGPoint(x: 32, y: 19), CGPoint(x: -28, y: 21), CGPoint(x: -46, y: 34)],
+                              fill: .white, stroke: gold, line: 1.6)
+        body.fillTexture = gradientTexture(rgb(0.9, 0.16, 0.16), rgb(0.52, 0.04, 0.06))
+        root.addChild(body)
+        root.addChild(Shape.line([CGPoint(x: -40, y: 10), CGPoint(x: 24, y: 10)], color: gold.withAlphaComponent(0.8), width: 1.2))
+        root.addChild(Shape.ellipse(CGRect(x: 38, y: 21, width: 6, height: 6), fill: gold))
+        // Runners
+        for (dx, alpha) in [(4.0, 0.55), (0.0, 1.0)] {
+            root.addChild(Shape.line([CGPoint(x: -48 + dx, y: -6), CGPoint(x: 34 + dx, y: -6), CGPoint(x: 45 + dx, y: 0), CGPoint(x: 47 + dx, y: 8),
+                                      CGPoint(x: 42 + dx, y: 10)], color: gold.withAlphaComponent(alpha), width: 2.6))
+        }
+        root.addChild(Shape.line([CGPoint(x: -33, y: -6), CGPoint(x: -33, y: 3)], color: gold, width: 2))
+        root.addChild(Shape.line([CGPoint(x: 17, y: -6), CGPoint(x: 17, y: 3)], color: gold, width: 2))
+        layerInOrder(root)
+    }
+
+    func animate(_ t: CGFloat) {
+        // Santa waves for ~2 s every ~6 s, otherwise holds the reins out front.
+        let waving = (t.truncatingRemainder(dividingBy: 6)) < 2
+        let targetShoulder: CGFloat = waving ? 2.5 + 0.35 * sin(t * 11) : 1.25 + 0.06 * sin(t * 3)
+        let targetElbow: CGFloat = waving ? 0.5 + 0.3 * sin(t * 11 + 1) : -0.5
+        shoulder.zRotation += (targetShoulder - shoulder.zRotation) * 0.2
+        elbow.zRotation += (targetElbow - elbow.zRotation) * 0.2
+        santa.position.y = 16 + sin(t * 4) * 0.8
+        hatTip.zRotation = -0.15 + 0.18 * sin(t * 5)
+    }
+}
+
+// MARK: - Santa
+
+/// Santa's team on a random, wandering flight across the sky. Drops a present on a window on the way.
 final class SantaEffect: SceneEffect {
-    private let node: SKNode
-    private let dir: CGFloat
-    private let speed: CGFloat = 250
-    private let baseY: CGFloat
-    private var x: CGFloat
+    private let path: FlightPath
+    private let speed = CGFloat.random(in: 200...250)
+    private var s: CGFloat = 0
+    private var phi: CGFloat = 0
+    private let root = SKNode()
+    private var deer: [Reindeer] = []
+    private let sleigh = SleighRig()
+    private let reins = SKShapeNode()
+    private let reinsFar = SKShapeNode()
     private var sparkleTimer: CGFloat = 0
-    private var dropX: CGFloat
+    private let drop: CGPoint?
     private var dropped = false
+    private static let spacing: CGFloat = 52
+    private static let sleighGap: CGFloat = 66
 
     init(scene: SnowScene) {
         let w = scene.size.width, h = scene.size.height
-        dir = Bool.random() ? 1 : -1
-        x = dir > 0 ? -300 : w + 300
-        baseY = h * .random(in: 0.72...0.84)
-        node = SantaEffect.makeTeam()
-        node.xScale = dir
-        node.zPosition = 150
-        scene.addChild(node)
-        // Aim the present at a visible window when there is one.
         let targets = scene.visibleWindows.filter {
             $0.rect.minX > 0 && $0.rect.maxX < w && $0.rect.maxY < h - 30 && $0.rect.width > 160 &&
                 $0.pile.exposed.filter { $0 }.count * 2 > $0.pile.count      // top edge mostly visible
         }
         if let t = targets.randomElement() {
-            dropX = t.rect.minX + t.rect.width * .random(in: 0.25...0.75) + dir * 60
+            drop = CGPoint(x: t.rect.minX + t.rect.width * .random(in: 0.25...0.75), y: t.rect.maxY)
         } else {
-            dropX = .random(in: (w * 0.2)...(w * 0.8))
+            drop = CGPoint(x: .random(in: (w * 0.2)...(w * 0.8)), y: 0)
         }
+        path = FlightPath.random(size: scene.size, through: drop)
+
+        root.zPosition = 150
+        scene.addChild(root)
+        reinsFar.strokeColor = rgb(0.6, 0.45, 0.2, 0.8)
+        reinsFar.lineWidth = 1
+        reinsFar.zPosition = 0.5
+        root.addChild(reinsFar)
+        for i in 0..<4 {
+            let d = Reindeer(lead: i == 0)
+            d.root.zPosition = 1 + CGFloat(i) * 0.1
+            root.addChild(d.root)
+            deer.append(d)
+        }
+        reins.strokeColor = rgb(0.95, 0.78, 0.3)
+        reins.lineWidth = 1.3
+        reins.zPosition = 2.5
+        root.addChild(reins)
+        sleigh.root.zPosition = 3
+        root.addChild(sleigh.root)
+    }
+
+    /// Faces the part along `angle`, mirrored when flying left so it never ends up upside down.
+    private func pose(_ n: SKNode, at p: CGPoint, angle a: CGFloat) {
+        n.position = p
+        let left = cos(a) < 0
+        n.xScale = left ? -1 : 1
+        var r = left ? a - .pi : a
+        while r > .pi { r -= 2 * .pi }
+        while r < -.pi { r += 2 * .pi }
+        n.zRotation = max(-0.85, min(0.85, r))
     }
 
     func update(dt: CGFloat, t: TimeInterval, in scene: SnowScene) -> Bool {
-        x += dir * speed * dt
-        let y = baseY + sin(x * 0.007) * 26
-        node.position = CGPoint(x: x, y: y)
-        node.zRotation = cos(x * 0.007) * 0.18 * dir
+        s += speed * dt
+        phi += dt * 9
+        let tf = CGFloat(t)
 
+        var chests: [CGPoint] = []
+        for (i, d) in deer.enumerated() {
+            let (p, a) = path.point(at: s - CGFloat(i) * SantaEffect.spacing)
+            let bob = sin(phi + CGFloat(i) * 0.9) * 2.5
+            pose(d.root, at: CGPoint(x: p.x, y: p.y + bob), angle: a)
+            d.animate(phi + CGFloat(i) * 0.9)
+            chests.append(d.root.convert(d.chest, to: root))
+        }
+        let sd = s - CGFloat(deer.count - 1) * SantaEffect.spacing - SantaEffect.sleighGap
+        let (sp, sa) = path.point(at: sd)
+        pose(sleigh.root, at: CGPoint(x: sp.x, y: sp.y + sin(tf * 2.2) * 2), angle: sa)
+        sleigh.animate(tf)
+
+        // Reins from the sleigh's front through each reindeer's collar.
+        let start = sleigh.root.convert(sleigh.front, to: root)
+        let line = CGMutablePath()
+        line.move(to: start)
+        for c in chests.reversed() { line.addLine(to: c) }
+        reins.path = line
+        reinsFar.path = line.copy(using: [CGAffineTransform(translationX: -2, y: 3)])
+
+        // Sparkle trail
         sparkleTimer -= dt
         if sparkleTimer <= 0 {
-            sparkleTimer = 0.035
-            let s = SKSpriteNode(texture: Tex.spark, size: CGSize(width: 12, height: 12))
-            s.color = Bool.random() ? rgb(1, 0.9, 0.5) : .white
-            s.colorBlendFactor = 1
-            s.blendMode = .add
-            s.position = CGPoint(x: x - dir * 55, y: y + .random(in: -4...14))
-            s.zPosition = 149
-            scene.addChild(s)
-            s.run(.sequence([.group([.moveBy(x: .random(in: -10...10), y: -.random(in: 20...60), duration: 1.3),
-                                     .fadeOut(withDuration: 1.3), .scale(to: 0.2, duration: 1.3)]), .removeFromParent()]))
+            sparkleTimer = 0.03
+            let back = sleigh.root.convert(CGPoint(x: -50, y: 8), to: scene)
+            let st = SKSpriteNode(texture: Tex.spark, size: CGSize(width: 12, height: 12))
+            st.color = Bool.random() ? rgb(1, 0.9, 0.5) : .white
+            st.colorBlendFactor = 1
+            st.blendMode = .add
+            st.position = CGPoint(x: back.x + .random(in: -4...4), y: back.y + .random(in: -6...6))
+            st.zPosition = 149
+            scene.addChild(st)
+            st.run(.sequence([.group([.moveBy(x: .random(in: -10...10), y: -.random(in: 20...60), duration: 1.3),
+                                      .fadeOut(withDuration: 1.3), .scale(to: 0.2, duration: 1.3)]), .removeFromParent()]))
         }
 
-        if !dropped && (dir > 0 ? x >= dropX : x <= dropX) {
+        // Drop the present as the sleigh passes over the chosen window.
+        if !dropped, let d = drop, abs(sp.x - d.x) < 14, sp.y > d.y + 20 {
             dropped = true
-            scene.add(PresentEffect(at: CGPoint(x: x - dir * 10, y: y), vx: dir * 60, scene: scene))
+            let vx = cos(sa) * speed * 0.25
+            scene.add(PresentEffect(at: CGPoint(x: sp.x, y: sp.y + 4), vx: vx, scene: scene))
         }
 
-        if (dir > 0 && x > scene.size.width + 320) || (dir < 0 && x < -320) {
-            node.removeFromParent()
+        if sd > path.length + 300 {
+            root.removeFromParent()
             return false
         }
         return true
-    }
-
-    /// Sleigh, Santa and reindeer drawn with shapes, facing right.
-    static func makeTeam() -> SKNode {
-        let root = SKNode()
-        let red = rgb(0.80, 0.10, 0.12), gold = rgb(0.95, 0.78, 0.30), brown = rgb(0.50, 0.32, 0.17)
-
-        // Harness
-        root.addChild(Shape.line([CGPoint(x: 38, y: 18), CGPoint(x: 80, y: 16), CGPoint(x: 124, y: 18), CGPoint(x: 168, y: 20), CGPoint(x: 212, y: 22)],
-                                 color: gold, width: 1.2))
-        // Reindeer
-        for i in 0..<4 {
-            let deer = SKNode()
-            deer.position = CGPoint(x: 70 + CGFloat(i) * 44, y: 6 + CGFloat(i) * 1.5)
-            for (lx, delay) in [(-10.0, 0.0), (-6.0, 0.12), (7.0, 0.06), (11.0, 0.18)] {
-                let leg = Shape.rect(CGRect(x: -1, y: -11, width: 2.4, height: 12), radius: 1, fill: brown.blended(withFraction: 0.3, of: .black))
-                leg.position = CGPoint(x: lx, y: 3)
-                let swing = SKAction.sequence([.rotate(toAngle: 0.6, duration: 0.18), .rotate(toAngle: -0.5, duration: 0.18)])
-                leg.run(.sequence([.wait(forDuration: delay), .repeatForever(swing)]))
-                deer.addChild(leg)
-            }
-            deer.addChild(Shape.ellipse(CGRect(x: -15, y: 0, width: 30, height: 13), fill: brown))
-            deer.addChild(Shape.ellipse(CGRect(x: -18, y: 6, width: 6, height: 5), fill: rgb(0.95, 0.92, 0.85)))   // tail
-            deer.addChild(Shape.line([CGPoint(x: 10, y: 8), CGPoint(x: 16, y: 20)], color: brown, width: 5))
-            deer.addChild(Shape.ellipse(CGRect(x: 12, y: 17, width: 13, height: 8), fill: brown))
-            deer.addChild(Shape.line([CGPoint(x: 15, y: 24), CGPoint(x: 13, y: 33), CGPoint(x: 9, y: 36)], color: rgb(0.85, 0.75, 0.55), width: 1.3))
-            deer.addChild(Shape.line([CGPoint(x: 13, y: 30), CGPoint(x: 17, y: 34)], color: rgb(0.85, 0.75, 0.55), width: 1.3))
-            deer.addChild(Shape.ellipse(CGRect(x: 19, y: 22, width: 2, height: 2), fill: .black))
-            if i == 3 {
-                let nose = glowSprite(rgb(1, 0.15, 0.1), size: 16)
-                nose.position = CGPoint(x: 25, y: 20)
-                nose.run(.repeatForever(.sequence([.fadeAlpha(to: 0.5, duration: 0.5), .fadeAlpha(to: 1, duration: 0.5)])))
-                deer.addChild(nose)
-                deer.addChild(Shape.ellipse(CGRect(x: 23, y: 18.5, width: 4, height: 4), fill: rgb(1, 0.2, 0.15)))
-            }
-            root.addChild(deer)
-        }
-        // Sack
-        root.addChild(Shape.ellipse(CGRect(x: -40, y: 14, width: 26, height: 28), fill: rgb(0.58, 0.40, 0.22)))
-        // Santa
-        root.addChild(Shape.ellipse(CGRect(x: -16, y: 14, width: 24, height: 26), fill: red))
-        root.addChild(Shape.ellipse(CGRect(x: -5, y: 38, width: 14, height: 14), fill: rgb(1, 0.84, 0.72)))
-        root.addChild(Shape.ellipse(CGRect(x: -4, y: 29, width: 15, height: 15), fill: .white))
-        root.addChild(Shape.poly([CGPoint(x: -6, y: 48), CGPoint(x: 10, y: 48), CGPoint(x: -10, y: 62)], fill: red))
-        root.addChild(Shape.rect(CGRect(x: -7, y: 46, width: 18, height: 4), radius: 2, fill: .white))
-        root.addChild(Shape.ellipse(CGRect(x: -13, y: 59, width: 6, height: 6), fill: .white))
-        // Sleigh body
-        let body = Shape.poly([CGPoint(x: -44, y: 2), CGPoint(x: 26, y: 2), CGPoint(x: 38, y: 10), CGPoint(x: 42, y: 22),
-                               CGPoint(x: 35, y: 27), CGPoint(x: 31, y: 18), CGPoint(x: -28, y: 20), CGPoint(x: -44, y: 32)],
-                              fill: red, stroke: gold, line: 1.5)
-        root.addChild(body)
-        // Runner
-        root.addChild(Shape.line([CGPoint(x: -46, y: -6), CGPoint(x: 34, y: -6), CGPoint(x: 44, y: 0), CGPoint(x: 46, y: 7)], color: gold, width: 2.5))
-        root.addChild(Shape.line([CGPoint(x: -32, y: -6), CGPoint(x: -32, y: 2)], color: gold, width: 2))
-        root.addChild(Shape.line([CGPoint(x: 18, y: -6), CGPoint(x: 18, y: 2)], color: gold, width: 2))
-        root.setScale(1.1)
-        return root
     }
 }
 

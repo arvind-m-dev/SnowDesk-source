@@ -1,91 +1,139 @@
 import SpriteKit
 
-/// A little snowcat that drives along the bottom of the screen and ploughs the snow away.
-/// `big` is the giant version used to dig you out after "Bury my desktop".
+/// A small 3D snowcat that drives along the bottom of the screen and ploughs the snow.
+/// The blade pushes a rolling mound ahead of it, the snow wall in front slumps into the blade,
+/// and the excess is thrown off in a spray. `big` is the larger one that digs you out after "Bury my desktop".
 final class PloughEffect: SceneEffect {
-    private let node: SKNode
-    private let scale: CGFloat
+    private let cat: Snowcat3D
+    private let body: SKSpriteNode
+    private let frames: [SKTexture]
+    private var travelled: CGFloat = 0
+    private let shadow: SKSpriteNode
+    private let spray = SKEmitterNode()
     private let speed: CGFloat
+    private let bladeHeight: CGFloat
     private var x: CGFloat
+    private var sprayRate: CGFloat = 0
     private var puffTimer: CGFloat = 0
-    private var carried: CGFloat = 0
-    private let beacon: SKSpriteNode
+    private var oldSlope: CGFloat = 1.3
     private(set) var done = false
 
     init(big: Bool, scene: SnowScene) {
-        scale = big ? 3.2 : 1
-        speed = big ? 240 : 150
-        x = -60 * scale
-        let n = SKNode()
-        let orange = rgb(0.96, 0.55, 0.10), dark = rgb(0.18, 0.18, 0.2)
-        n.addChild(Shape.rect(CGRect(x: -40, y: 0, width: 80, height: 16), radius: 8, fill: dark))
-        for wx in [-30.0, -10.0, 10.0, 30.0] {
-            let wheel = Shape.ellipse(CGRect(x: -5, y: -5, width: 10, height: 10), fill: rgb(0.45, 0.45, 0.48), stroke: rgb(0.3, 0.3, 0.32))
-            wheel.position = CGPoint(x: wx, y: 8)
-            wheel.addChild(Shape.line([CGPoint(x: -4, y: 0), CGPoint(x: 4, y: 0)], color: rgb(0.3, 0.3, 0.32), width: 1.2))
-            wheel.run(.repeatForever(.rotate(byAngle: -.pi * 2, duration: 0.8)))
-            n.addChild(wheel)
-        }
-        n.addChild(Shape.rect(CGRect(x: -34, y: 14, width: 60, height: 20), radius: 4, fill: orange))
-        n.addChild(Shape.rect(CGRect(x: -28, y: 32, width: 32, height: 22), radius: 4, fill: orange))
-        n.addChild(Shape.rect(CGRect(x: -24, y: 36, width: 24, height: 14), radius: 2, fill: rgb(0.70, 0.85, 0.96)))
-        n.addChild(Shape.rect(CGRect(x: -36, y: 33, width: 3, height: 14), fill: dark))     // exhaust
-        n.addChild(Shape.line([CGPoint(x: 24, y: 16), CGPoint(x: 36, y: 14)], color: dark, width: 3))
-        n.addChild(Shape.poly([CGPoint(x: 32, y: -1), CGPoint(x: 46, y: -3), CGPoint(x: 49, y: 30), CGPoint(x: 38, y: 32), CGPoint(x: 33, y: 22)],
-                              fill: rgb(0.78, 0.80, 0.84), stroke: rgb(0.5, 0.52, 0.56)))
-        n.addChild(Shape.rect(CGRect(x: -16, y: 54, width: 8, height: 4), radius: 1, fill: rgb(1, 0.7, 0.1)))
-        beacon = glowSprite(rgb(1, 0.65, 0.1), size: 26)
-        beacon.position = CGPoint(x: -12, y: 57)
-        beacon.run(.repeatForever(.sequence([.fadeAlpha(to: 1, duration: 0.25), .fadeAlpha(to: 0.15, duration: 0.25)])))
-        n.addChild(beacon)
-        n.setScale(scale)
-        n.zPosition = 60
-        node = n
-        scene.addChild(n)
+        cat = Snowcat3D(width: big ? 210 : 104)
+        speed = big ? 170 : 110
+        bladeHeight = big ? 34 : 17
+        x = -cat.viewport.width
+        oldSlope = scene.ground.maxSlope
+        scene.ground.maxSlope = 12          // let the cut walls stand instead of draining into the cleared lane
+        frames = cat.frames()
+        body = SKSpriteNode(texture: frames[0], size: cat.viewport)
+        body.zPosition = 60
+        scene.addChild(body)
+
+        shadow = SKSpriteNode(texture: Tex.glow, size: CGSize(width: cat.viewport.width * 0.95, height: cat.viewport.height * 0.18))
+        shadow.color = .black
+        shadow.colorBlendFactor = 1
+        shadow.alpha = 0.35
+        shadow.zPosition = 59
+        scene.addChild(shadow)
+
+        spray.particleTexture = Tex.glow
+        spray.particleBirthRate = 0
+        spray.particleLifetime = 1.1
+        spray.particleLifetimeRange = 0.4
+        spray.particlePositionRange = CGVector(dx: 6, dy: bladeHeight * 0.6)
+        spray.emissionAngle = .pi * 0.33
+        spray.emissionAngleRange = 0.55
+        spray.particleSpeed = big ? 300 : 190
+        spray.particleSpeedRange = big ? 120 : 70
+        spray.yAcceleration = -900
+        spray.particleScale = big ? 0.12 : 0.08
+        spray.particleScaleRange = 0.05
+        spray.particleAlpha = 0.95
+        spray.particleAlphaSpeed = -0.5
+        spray.particleColor = .white
+        spray.particleColorBlendFactor = 1
+        spray.zPosition = 61
+        scene.addChild(spray)
+        spray.targetNode = scene
     }
 
-    func update(dt: CGFloat, t: TimeInterval, in scene: SnowScene) -> Bool {
-        x += speed * dt
-        node.position = CGPoint(x: x, y: 0)
+    /// Scene x of the blade's front edge.
+    private var bladeX: CGFloat { x + cat.viewport.width * (cat.bladeFrontFraction - 0.5) }
 
-        // Blade: clear the ground in front and throw the snow forward.
-        let front = x + 46 * scale
-        let ground = scene.ground!
-        let lo = Int((front - 12 * scale) / Pile.colW), hi = Int((front + 2) / Pile.colW)
-        var spawned = 0
-        let perChunk: CGFloat = scale > 1 ? 9 : 2.5
+    func update(dt: CGFloat, t: TimeInterval, in scene: SnowScene) -> Bool {
+        let step = speed * dt
+        x += step
+        let vp = cat.viewport
+        body.position = CGPoint(x: x, y: vp.height * (0.5 - cat.bottomFraction))
+        shadow.position = CGPoint(x: x + vp.width * 0.06, y: 2)
+        travelled += step
+        body.texture = frames[Int(travelled / cat.pointsPerFrame) % frames.count]
+
+        let g = scene.ground!
+        let bx = bladeX
+        let bh = bladeHeight
+        var removed: CGFloat = 0
+
+        // 1. Under and just behind the blade: scraped clean.
+        let lo = max(0, Int((bx - vp.width * 0.75) / Pile.colW))
+        let hi = min(g.count - 1, Int(bx / Pile.colW))
         if lo <= hi {
-            for c in max(0, lo)...max(0, min(ground.count - 1, hi)) where c < ground.count {
-                let h = ground.height(at: c)
-                guard h > 0.3 else { continue }
-                carried += h
-                ground.setHeight(c, 0)
-                while carried > perChunk && spawned < (scale > 1 ? 18 : 8) {
-                    carried -= perChunk
-                    spawned += 1
-                    let p = CGPoint(x: front + .random(in: 0...8), y: .random(in: 0...min(h, 50 * scale)))
-                    scene.spawnChunk(at: p, vx: speed * .random(in: 0.6...1.6), vy: -.random(in: 180...420) * (scale > 1 ? 1.4 : 1))
-                }
+            for c in lo...hi {
+                let h = g.height(at: c)
+                if h > 0.2 { removed += h; g.setHeight(c, 0) }
             }
         }
-        if carried > perChunk * 20 { carried = perChunk * 20 }
+        // 2. Ahead: the snow wall slumps toward the blade (a slope, not a cliff).
+        let ahead = max(0, hi + 1)
+        if ahead < g.count {
+            for c in ahead..<g.count {
+                let d = CGFloat(c) * Pile.colW - bx
+                let limit = bh * 0.9 + d * 1.35
+                if limit > g.maxHeight { break }
+                let h = g.height(at: c)
+                if h > limit { removed += h - limit; g.setHeight(c, limit) }
+            }
+        }
+        // 3. Some of it rolls ahead as a mound in front of the blade; the rest is thrown off.
+        var keep = removed * 0.5
+        var k = ahead
+        while keep > 0 && k < min(g.count, ahead + 7) {
+            let room = bh * 0.8 * (1 - CGFloat(k - ahead) / 8) - g.height(at: k)
+            if room > 0 {
+                let add = min(room, keep)
+                g.setHeight(k, g.height(at: k) + add)
+                keep -= add
+            }
+            k += 1
+        }
+        let thrown = removed - (removed * 0.5 - keep)
+        let target = min(420, thrown / max(dt, 0.001) * 0.6)
+        sprayRate += (target - sprayRate) * min(1, dt * 8)
+        spray.particleBirthRate = sprayRate
+        spray.position = CGPoint(x: bx + 2, y: bh * 0.9)
 
+        // Exhaust puffs
         puffTimer -= dt
         if puffTimer <= 0 {
-            puffTimer = 0.18
-            let puff = SKSpriteNode(texture: Tex.glow, size: CGSize(width: 10 * scale, height: 10 * scale))
-            puff.color = rgb(0.6, 0.6, 0.65)
+            puffTimer = 0.22
+            let puff = SKSpriteNode(texture: Tex.glow, size: CGSize(width: vp.width * 0.08, height: vp.width * 0.08))
+            puff.color = rgb(0.6, 0.62, 0.68)
             puff.colorBlendFactor = 1
-            puff.alpha = 0.5
-            puff.position = CGPoint(x: x - 35 * scale, y: 48 * scale)
+            puff.alpha = 0.45
+            puff.position = CGPoint(x: x - vp.width * 0.2, y: vp.height * 0.62)
             puff.zPosition = 59
             scene.addChild(puff)
-            puff.run(.sequence([.group([.moveBy(x: -20, y: 40 * scale, duration: 1.4), .scale(to: 2.5, duration: 1.4),
+            puff.run(.sequence([.group([.moveBy(x: -12, y: vp.height * 0.4, duration: 1.4), .scale(to: 2.4, duration: 1.4),
                                         .fadeOut(withDuration: 1.4)]), .removeFromParent()]))
         }
 
-        if x > scene.size.width + 80 * scale {
-            node.removeFromParent()
+        if x - vp.width / 2 > scene.size.width + 40 {
+            body.removeFromParent()
+            shadow.removeFromParent()
+            scene.ground.maxSlope = oldSlope
+            spray.particleBirthRate = 0
+            spray.run(.sequence([.wait(forDuration: 1.5), .removeFromParent()]))
             done = true
             return false
         }
