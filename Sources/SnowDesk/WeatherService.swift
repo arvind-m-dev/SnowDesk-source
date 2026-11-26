@@ -52,7 +52,8 @@ final class WeatherService {
                         .init(name: "longitude", value: String(s.cityLon)),
                         .init(name: "current", value: "weather_code,is_day")]
         fetchJSON(c.url!) { json in
-            guard let cur = json?["current"] as? [String: Any], let code = cur["weather_code"] as? Int else { return }
+            guard Settings.shared.cityName == name,
+                  let cur = json?["current"] as? [String: Any], let code = cur["weather_code"] as? Int else { return }
             let day = (cur["is_day"] as? Int ?? 1) == 1
             let month = Calendar.current.component(.month, from: Date())
             let kind = WeatherService.kind(code: code, isDay: day, lat: s.cityLat, month: month)

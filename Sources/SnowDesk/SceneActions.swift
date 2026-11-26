@@ -19,6 +19,8 @@ extension SnowScene {
 
     var isFrozen: Bool { effect(of: FrostEffect.self) != nil }
 
+    func thawFrost() { effect(of: FrostEffect.self)?.thaw() }
+
     func toggleFrost() {
         if let f = effect(of: FrostEffect.self) { f.thaw() } else { add(FrostEffect(scene: self)) }
     }

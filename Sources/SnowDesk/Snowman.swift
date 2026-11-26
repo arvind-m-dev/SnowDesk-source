@@ -71,6 +71,18 @@ final class SnowmanSystem: SceneEffect {
         return true
     }
 
+    // MARK: Test hooks (used by --demo)
+
+    func testDrop(at p: CGPoint, radius r: CGFloat, vel: CGVector, thrown: Bool, in scene: SnowScene) {
+        let n = SKSpriteNode(texture: Tex.ball, size: CGSize(width: r * 2, height: r * 2))
+        n.position = p
+        n.zPosition = 70
+        scene.addChild(n)
+        falling.append(Ball(node: n, radius: r, vel: vel, thrown: thrown))
+    }
+
+    var summary: String { "stacks=\(stacks.count) balls=\(stacks.map { $0.radii.count }) decorated=\(stacks.filter { $0.decorated }.count) falling=\(falling.count)" }
+
     /// Returns false when the ball is gone (landed, stacked or splatted).
     private func step(_ b: Ball, dt: CGFloat, scene: SnowScene) -> Bool {
         b.vel.dy -= 1300 * dt

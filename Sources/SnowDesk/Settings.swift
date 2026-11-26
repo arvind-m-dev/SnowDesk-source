@@ -54,7 +54,7 @@ final class Settings {
     }
 
     var intensity: Intensity {
-        get { Intensity(rawValue: d.integer(forKey: "intensity")) ?? .medium }
+        get { Intensity(rawValue: d.object(forKey: "intensity") as? Int ?? Intensity.medium.rawValue) ?? .medium }
         set { d.set(newValue.rawValue, forKey: "intensity") }
     }
 

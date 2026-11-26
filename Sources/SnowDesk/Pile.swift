@@ -9,7 +9,9 @@ final class Pile {
     var exposed: [Bool]
     var maxHeight: CGFloat
     /// Steepest step between neighbouring columns before snow slumps (raised while ploughing so walls hold).
-    var maxSlope: CGFloat = 1.3
+    var maxSlope: CGFloat { ploughsActive > 0 ? 12 : 1.3 }
+    /// Ploughs currently cutting this pile; while > 0 the cut walls are allowed to stand.
+    var ploughsActive = 0
     let node = SKShapeNode()
     var dirty = true
 

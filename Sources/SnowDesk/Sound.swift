@@ -13,7 +13,6 @@ final class Sound {
     private let loopPlayer = AVAudioPlayerNode()
     private var buffers: [Kind: AVAudioPCMBuffer] = [:]
     private lazy var crackle = makeCrackle()
-    private var started = false
 
     private init() {
         for _ in 0..<5 {
@@ -25,11 +24,18 @@ final class Sound {
         engine.attach(loopPlayer)
         engine.connect(loopPlayer, to: engine.mainMixerNode, format: format)
         engine.mainMixerNode.outputVolume = 0.6
+        // macOS stops the engine when the output device changes (headphones, AirPods...). Start it again.
+        NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            if self.crackleWanted { self.startCrackle() }
+        }
     }
 
+    private var crackleWanted = false
+
     private func ensureStarted() -> Bool {
-        if !started {
-            do { try engine.start(); started = true } catch { return false }
+        if !engine.isRunning {
+            do { try engine.start() } catch { return false }
         }
         return true
     }
@@ -46,13 +52,22 @@ final class Sound {
     }
 
     func startCrackle() {
+        crackleWanted = true
         guard Settings.shared.sounds, ensureStarted() else { return }
         loopPlayer.volume = 0.5
         loopPlayer.scheduleBuffer(crackle, at: nil, options: [.loops, .interrupts])
         loopPlayer.play()
     }
 
-    func stopCrackle() { loopPlayer.stop() }
+    func stopCrackle() {
+        crackleWanted = false
+        loopPlayer.stop()
+    }
+
+    /// Follow the Sounds switch: silence the crackle, or bring it back if the fire is still lit.
+    func soundsChanged() {
+        if Settings.shared.sounds { if crackleWanted { startCrackle() } } else { loopPlayer.stop() }
+    }
 
     // MARK: - Synthesis
 

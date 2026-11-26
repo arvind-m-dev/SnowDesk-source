@@ -191,6 +191,11 @@ final class MicBeat {
             let rms = sqrt(sum / Float(max(n, 1)))
             DispatchQueue.main.async { self?.process(rms) }
         }
+        NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: e, queue: .main) { [weak self] _ in
+            guard let self, self.wanted else { return }
+            self.stop()
+            self.start()
+        }
         do {
             try e.start()
             engine = e
@@ -212,6 +217,7 @@ final class MicBeat {
     func stop() {
         wanted = false
         guard let e = engine else { return }
+        NotificationCenter.default.removeObserver(self, name: .AVAudioEngineConfigurationChange, object: e)
         e.inputNode.removeTap(onBus: 0)
         e.stop()
         engine = nil

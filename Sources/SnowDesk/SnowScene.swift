@@ -291,6 +291,7 @@ final class SnowScene: SKScene {
                 state.pile.node.isHidden = true
             }
             if t - state.lastSeen > 120 {
+                for p in perched where p.windowID == id { p.onDislodge?() }
                 state.pile.node.removeFromParent()
                 windows[id] = nil
             }
@@ -323,7 +324,7 @@ final class SnowScene: SKScene {
         let blockers = front.map(\.rect).filter {
             $0.minY < top + 2 && $0.maxY > top - 2 && $0.maxX > r.minX && $0.minX < r.maxX
         }
-        let offScreen = top > size.height - 2
+        let offScreen = top > size.height - 2 || top < 1      // e.g. a window on a display below this one
         for c in 0..<pile.count {
             let x = r.minX + (CGFloat(c) + 0.5) * Pile.colW
             let covered = offScreen || x < 0 || x > size.width || blockers.contains { x >= $0.minX && x <= $0.maxX }

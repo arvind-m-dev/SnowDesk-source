@@ -29,6 +29,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] e in
             let p = NSEvent.mouseLocation
             self?.scenes.forEach { $0.handleClick(globalPoint: p, count: e.clickCount) }
+            if e.clickCount >= 2 { self?.scenes.forEach { $0.thawFrost() } }     // a double-click thaws every display
         }
 
         WeatherService.shared.onChange = { [weak self] kind in self?.setWeather(kind, fromService: true) }
@@ -69,6 +70,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     case "santa": primary?.callSanta()
                     case "bury": bury()
                     case "plough": plough()
+                    case "snowman":
+                        guard let sc = primary, let sm = sc.effect(of: SnowmanSystem.self) else { break }
+                        for (k, r) in [CGFloat(26), 20, 15].enumerated() {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + Double(k) * 1.5) {
+                                sm.testDrop(at: CGPoint(x: sc.size.width * 0.3, y: sc.size.height * 0.6), radius: r, vel: .zero, thrown: false, in: sc)
+                            }
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { self.log("snowman: \(sm.summary)") }
+                    case "snowball":
+                        guard let sc = primary, let sm = sc.effect(of: SnowmanSystem.self) else { break }
+                        sm.testDrop(at: CGPoint(x: sc.size.width * 0.2, y: sc.size.height * 0.5), radius: 18,
+                                    vel: CGVector(dx: 900, dy: -300), thrown: true, in: sc)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { self.log("snowball: \(sm.summary) chunks=\(sc.chunks.count)") }
+                    case "present":
+                        guard let sc = primary else { break }
+                        let p = PresentEffect(at: CGPoint(x: sc.size.width * 0.5, y: sc.size.height * 0.7), vx: 0, scene: sc)
+                        sc.add(p)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                            self.log("present: perched=\(p.isPerched) at=\(p.position)")
+                            let g = CGPoint(x: p.position.x + sc.screenFrame.minX, y: p.position.y + 10 + sc.screenFrame.minY)
+                            sc.handleClick(globalPoint: g, count: 1)
+                            self.log("present: opened=\(p.isOpened)")
+                        }
+                    case "thaw":
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [self] in
+                            scenes.forEach { $0.handleClick(globalPoint: CGPoint(x: $0.screenFrame.midX, y: $0.screenFrame.midY), count: 2) }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { self.log("thaw: frozen=\(self.primary?.isFrozen ?? false)") }
+                        }
+                    case "clear": clearSnow()
+                    case "follow":
+                        WeatherService.shared.follow(city: "Oslo") { r in
+                            self.log("follow: \(r)")
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                                self.log("follow: summary=\(WeatherService.shared.lastSummary ?? "nil") sceneWeather=\(self.primary?.weather.rawValue ?? "")")
+                            }
+                        }
+                    case "decorate":
+                        room.show()
+                        log("decorate: ornaments=\(room.testDecorate())")
                     case "deep": scenes.forEach { sc in for c in 0..<sc.ground.count { sc.ground.add(c, 26 + 6 * sin(CGFloat(c) * 0.05)) } }
                     case "frost": freeze()
                     case "fire": decor.apply(fire: true, trees: settings.treeStyle)
@@ -83,6 +123,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let dir = value("--snapshot") {
             let delay = Double(value("--snapshot", 2) ?? "") ?? 6
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [self] in
+                for (i, sc) in scenes.enumerated() {
+                    let kinds = sc.effects.map { String(describing: type(of: $0)) }
+                    log("scene\(i): flakes=\(sc.flakes.count) chunks=\(sc.chunks.count) perched=\(sc.perched.count) slope=\(sc.ground.maxSlope) ploughs=\(sc.ground.ploughsActive) windows=\(sc.visibleWindows.count) effects=\(kinds)")
+                }
                 for (i, o) in overlays.enumerated() {
                     guard let view = o.window.contentView as? SKView,
                           let img = view.texture(from: o.scene, crop: o.scene.frame)?.cgImage() else { continue }
@@ -93,6 +137,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
     }
+
+    private func log(_ s: String) { FileHandle.standardError.write((s + "\n").data(using: .utf8)!) }
 
     private func savePNG(_ img: CGImage, _ url: URL, backdrop: Bool = false) {
         var out = img
@@ -116,7 +162,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func buildOverlays() {
         // Keep long-lived toggles across rebuilds.
-        overlays.forEach { $0.window.orderOut(nil) }
+        for o in overlays {                     // shut the old ones down properly (mic, effects, window)
+            o.scene.setLights(.off)
+            (o.window.contentView as? SKView)?.presentScene(nil)
+            o.window.orderOut(nil)
+            o.window.close()
+        }
         overlays = []
         for (i, screen) in Displays.active.enumerated() {
             let frame = screen.frame
@@ -340,7 +391,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func callSanta() { primary?.callSanta() }
     @objc private func bury() { scenes.forEach { $0.buryDesktop() } }
     @objc private func plough() { scenes.forEach { $0.sendPlough() } }
-    @objc private func freeze() { scenes.forEach { $0.toggleFrost() } }
+    /// Freeze or thaw every display together.
+    @objc private func freeze() {
+        let freezeNow = !(primary?.isFrozen ?? false)
+        scenes.forEach { if $0.isFrozen != freezeNow { $0.toggleFrost() } }
+    }
     @objc private func globe() { scenes.forEach { $0.snowGlobe() } }
     @objc private func clearSnow() { scenes.forEach { $0.clearAllSnow() } }
 
@@ -384,7 +439,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         screensChanged()
     }
 
-    @objc private func toggleSounds() { settings.sounds.toggle() }
+    @objc private func toggleSounds() {
+        settings.sounds.toggle()
+        Sound.shared.soundsChanged()
+    }
     @objc private func toggleSantaVisits() { settings.santaVisits.toggle() }
 
     @objc private func toggleLogin() {

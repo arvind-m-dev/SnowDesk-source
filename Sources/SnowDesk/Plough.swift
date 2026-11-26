@@ -15,7 +15,6 @@ final class PloughEffect: SceneEffect {
     private var x: CGFloat
     private var sprayRate: CGFloat = 0
     private var puffTimer: CGFloat = 0
-    private var oldSlope: CGFloat = 1.3
     private(set) var done = false
 
     init(big: Bool, scene: SnowScene) {
@@ -23,8 +22,7 @@ final class PloughEffect: SceneEffect {
         speed = big ? 170 : 110
         bladeHeight = big ? 34 : 17
         x = -cat.viewport.width
-        oldSlope = scene.ground.maxSlope
-        scene.ground.maxSlope = 12          // let the cut walls stand instead of draining into the cleared lane
+        scene.ground.ploughsActive += 1      // let the cut walls stand instead of draining into the cleared lane
         frames = cat.frames()
         body = SKSpriteNode(texture: frames[0], size: cat.viewport)
         body.zPosition = 60
@@ -131,7 +129,7 @@ final class PloughEffect: SceneEffect {
         if x - vp.width / 2 > scene.size.width + 40 {
             body.removeFromParent()
             shadow.removeFromParent()
-            scene.ground.maxSlope = oldSlope
+            scene.ground.ploughsActive = max(0, scene.ground.ploughsActive - 1)
             spray.particleBirthRate = 0
             spray.run(.sequence([.wait(forDuration: 1.5), .removeFromParent()]))
             done = true

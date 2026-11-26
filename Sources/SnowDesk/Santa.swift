@@ -277,7 +277,7 @@ final class SantaEffect: SceneEffect {
     init(scene: SnowScene) {
         let w = scene.size.width, h = scene.size.height
         let targets = scene.visibleWindows.filter {
-            $0.rect.minX > 0 && $0.rect.maxX < w && $0.rect.maxY < h - 30 && $0.rect.width > 160 &&
+            $0.rect.minX > 0 && $0.rect.maxX < w && $0.rect.maxY < h * 0.78 && $0.rect.width > 160 &&
                 $0.pile.exposed.filter { $0 }.count * 2 > $0.pile.count      // top edge mostly visible
         }
         if let t = targets.randomElement() {
@@ -379,6 +379,9 @@ final class SantaEffect: SceneEffect {
 final class PresentEffect: SceneEffect {
     private let node = SKNode()
     private let lid = SKNode()
+    var position: CGPoint { node.position }
+    var isOpened: Bool { opened }
+    var isPerched: Bool { perch != nil }
     private var vel: CGVector
     private var perch: Perched?
     private var opened = false

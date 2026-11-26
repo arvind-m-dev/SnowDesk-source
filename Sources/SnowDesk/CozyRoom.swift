@@ -20,7 +20,7 @@ enum OrnamentKind: String, CaseIterable {
 
 /// A cozy room with a Christmas tree, shown as a live wallpaper (below desktop icons).
 /// "Decorate" lets you click ornaments onto the tree; they're saved.
-final class CozyRoom: NSObject {
+final class CozyRoom: NSObject, NSWindowDelegate {
     static let themes = ["Pine Cabin", "Blue Hour", "Cranberry Parlor"]
 
     private var window: NSWindow?
@@ -61,6 +61,11 @@ final class CozyRoom: NSObject {
         return view.texture(from: s)?.cgImage()
     }
 
+    func testDecorate() -> Int {
+        scene?.testDecorate()
+        return scene?.ornamentCount ?? -1
+    }
+
     func setTheme(_ i: Int) {
         Settings.shared.roomTheme = i
         scene?.theme = i
@@ -78,6 +83,8 @@ final class CozyRoom: NSObject {
     func startDecorating() {
         show()
         window?.ignoresMouseEvents = false
+        // Finder's desktop icons sit above the room and would swallow the clicks, so lift the room while decorating.
+        window?.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1)
         if palette == nil { palette = makePalette() }
         palette?.center()
         palette?.orderFrontRegardless()
@@ -86,6 +93,7 @@ final class CozyRoom: NSObject {
 
     @objc func stopDecorating() {
         window?.ignoresMouseEvents = true
+        window?.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopWindow)) + 1)
         palette?.orderOut(nil)
     }
 
@@ -95,6 +103,7 @@ final class CozyRoom: NSObject {
         p.title = "Decorate the Tree"
         p.level = .floating
         p.isReleasedWhenClosed = false
+        p.delegate = self
         p.hidesOnDeactivate = false
 
         let stack = NSStackView()
@@ -121,6 +130,10 @@ final class CozyRoom: NSObject {
         stack.addArrangedSubview(row)
         p.contentView = stack
         return p
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        if (notification.object as? NSPanel) === palette { stopDecorating() }
     }
 
     @objc private func pick(_ sender: NSButton) {
@@ -310,7 +323,21 @@ final class RoomScene: SKScene {
     private func onTree(_ p: CGPoint) -> Bool { abs(p.x - treeX) < widthAt(y: p.y) - 6 }
 
     override func mouseDown(with event: NSEvent) {
-        let p = event.location(in: self)
+        placeSelected(at: event.location(in: self))
+    }
+
+    /// Test hook: hang one of every ornament at valid spots.
+    func testDecorate() {
+        for (i, k) in OrnamentKind.allCases.enumerated() {
+            selected = k
+            let y = treeTop.y - 60 - CGFloat(i) * (treeTop.y - floorTop) / 10
+            placeSelected(at: k == .present ? CGPoint(x: treeX + 40, y: floorTop - 30) : CGPoint(x: treeX + (i % 2 == 0 ? -20 : 20), y: y))
+        }
+    }
+
+    var ornamentCount: Int { ornamentLayer.children.count }
+
+    private func placeSelected(at p: CGPoint) {
         var spot = p
         switch selected {
         case .star:
@@ -326,7 +353,8 @@ final class RoomScene: SKScene {
         }
         place(selected, at: spot, animated: true)
         var list = Settings.shared.ornaments
-        list.append(["k": selected.rawValue, "x": spot.x / size.width, "y": spot.y / size.height])
+        // Saved relative to the tree (in screen heights) so ornaments stay on it on any screen shape.
+        list.append(["k": selected.rawValue, "dx": (spot.x - treeX) / size.height, "y": spot.y / size.height, "v": 2])
         Settings.shared.ornaments = list
     }
 
@@ -346,8 +374,12 @@ final class RoomScene: SKScene {
     private func loadOrnaments() {
         for o in Settings.shared.ornaments {
             guard let k = OrnamentKind(rawValue: o["k"] as? String ?? ""),
-                  let x = o["x"] as? Double, let y = o["y"] as? Double else { continue }
-            place(k, at: CGPoint(x: CGFloat(x) * size.width, y: CGFloat(y) * size.height), animated: false)
+                  let y = o["y"] as? Double else { continue }
+            let x: CGFloat
+            if let dx = o["dx"] as? Double { x = treeX + CGFloat(dx) * size.height }
+            else if let fx = o["x"] as? Double { x = CGFloat(fx) * size.width }          // saved by older versions
+            else { continue }
+            place(k, at: CGPoint(x: x, y: CGFloat(y) * size.height), animated: false)
         }
     }
 
