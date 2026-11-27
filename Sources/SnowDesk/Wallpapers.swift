@@ -2,7 +2,14 @@ import AppKit
 
 /// Procedurally painted winter wallpapers, rendered at each screen's full pixel size.
 enum Wallpapers {
-    static let names = ["Snowy Cabin", "Northern Lights", "Lantern Trail", "Quiet Village"]
+    static let names = ["Snowy Cabin", "Northern Lights", "Lantern Trail", "Quiet Village",
+                        "Spring Meadow", "Summer Beach", "Autumn Forest", "Monsoon River", "Mountain Lake", "Forest Stream",
+                        "Halloween Night", "Diwali Night", "New Year Fireworks", "Valentine Sunset"]
+
+    /// Menu groups: (heading, indices).
+    static let groups: [(String, [Int])] = [("Winter", [0, 1, 2, 3]), ("Seasons and Nature", [4, 5, 6, 7, 8, 9]), ("Festivals", [10, 11, 12, 13])]
+
+    static func index(of name: String) -> Int { names.firstIndex(of: name) ?? 0 }
 
     static var folder: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -53,17 +60,27 @@ enum Wallpapers {
                                   space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
         let P = Painter(ctx: ctx, W: CGFloat(w), H: CGFloat(h))
-        switch index {
-        case 1: P.northernLights()
-        case 2: P.lanternTrail()
-        case 3: P.village()
+        switch names.indices.contains(index) ? names[index] : "" {
+        case "Northern Lights": P.northernLights()
+        case "Lantern Trail": P.lanternTrail()
+        case "Quiet Village": P.village()
+        case "Spring Meadow": P.springMeadow()
+        case "Summer Beach": P.summerBeach()
+        case "Autumn Forest": P.autumnForest()
+        case "Monsoon River": P.monsoonRiver()
+        case "Mountain Lake": P.mountainLake()
+        case "Forest Stream": P.forestStream()
+        case "Halloween Night": P.halloweenNight()
+        case "Diwali Night": P.diwaliNight()
+        case "New Year Fireworks": P.newYearFireworks()
+        case "Valentine Sunset": P.valentineSunset()
         default: P.cabin()
         }
         return ctx.makeImage()
     }
 }
 
-private struct Painter {
+struct Painter {
     let ctx: CGContext
     let W: CGFloat
     let H: CGFloat
@@ -156,7 +173,7 @@ private struct Painter {
         }
     }
 
-    func house(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, wall: CGColor, steeple: Bool = false) {
+    func house(_ x: CGFloat, _ y: CGFloat, _ w: CGFloat, wall: CGColor, steeple: Bool = false, roof: CGColor? = nil) {
         let h = w * 0.65
         ctx.setFillColor(wall)
         ctx.fill(CGRect(x: x, y: y, width: w, height: h))
@@ -164,7 +181,7 @@ private struct Painter {
         ctx.setFillColor(c(0.25, 0.14, 0.12))
         ctx.move(to: CGPoint(x: x - w * 0.08, y: y + h)); ctx.addLine(to: CGPoint(x: x + w * 1.08, y: y + h)); ctx.addLine(to: CGPoint(x: x + w / 2, y: y + h + w * 0.45))
         ctx.fillPath()
-        ctx.setFillColor(c(0.93, 0.95, 1))
+        ctx.setFillColor(roof ?? c(0.93, 0.95, 1))
         ctx.move(to: CGPoint(x: x - w * 0.1, y: y + h - 2 * s)); ctx.addLine(to: CGPoint(x: x + w * 1.1, y: y + h - 2 * s))
         ctx.addLine(to: CGPoint(x: x + w / 2, y: y + h + w * 0.47)); ctx.fillPath()
         if steeple {

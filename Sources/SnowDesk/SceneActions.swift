@@ -67,4 +67,51 @@ extension SnowScene {
         }
         return got
     }
+
+    /// The running (not fading-out) effect of a type.
+    func live<T: SceneEffect & Finishable>(_ t: T.Type) -> T? {
+        effects.compactMap { $0 as? T }.first { !$0.isFinishing }
+    }
+
+    func setScenery(_ s: Set<Scenery>) {
+        if s.contains(.birds) { if live(BirdsEffect.self) == nil { add(BirdsEffect(scene: self)) } } else { live(BirdsEffect.self)?.finish() }
+        if s.contains(.butterflies) { if live(ButterfliesEffect.self) == nil { add(ButterfliesEffect(scene: self)) } } else { live(ButterfliesEffect.self)?.finish() }
+        if s.contains(.bats) { if live(BatsEffect.self) == nil { add(BatsEffect(scene: self)) } } else { live(BatsEffect.self)?.finish() }
+        let ski = s.contains(.skiers), sled = s.contains(.sledders)
+        if let r = live(RidersEffect.self) {
+            r.skiers = ski
+            r.sledders = sled
+        } else if ski || sled {
+            add(RidersEffect(skiers: ski, sledders: sled, scene: self))
+        }
+    }
+
+    func setEvent(_ kind: EventKind?) {
+        let current = live(EventEffect.self)
+        if current?.kind == kind { return }
+        current?.finish()
+        if let kind { add(EventEffect(kind: kind, scene: self)) }
+    }
+
+    func sendRider(_ kind: RidersEffect.Kind) {
+        let r = live(RidersEffect.self) ?? {
+            let r = RidersEffect(skiers: false, sledders: false, scene: self)
+            add(r)
+            return r
+        }()
+        r.send(kind, scene: self)
+    }
+
+    var snowmen: SnowmanBuilds {
+        if let b = effect(of: SnowmanBuilds.self) { return b }
+        let b = SnowmanBuilds()
+        add(b)
+        return b
+    }
+}
+
+/// An effect that fades out after `finish()` before the scene drops it.
+protocol Finishable: AnyObject {
+    var isFinishing: Bool { get }
+    func finish()
 }

@@ -54,6 +54,10 @@ final class Perched {
     var localX: CGFloat            // from the window's left edge (or the scene's left edge)
     var yOffset: CGFloat           // above the ledge
     var onDislodge: (() -> Void)?
+    /// Can be picked up with ⌘-drag (birds can't: they fly off instead).
+    var draggable = true
+    /// Being dragged right now: the scene leaves its position alone.
+    var held = false
 
     init(node: SKNode, windowID: CGWindowID?, localX: CGFloat, yOffset: CGFloat) {
         self.node = node
@@ -89,19 +93,24 @@ final class SnowScene: SKScene {
     private(set) var ground: Pile!
     private(set) var effects: [SceneEffect] = []
     private(set) var perched: [Perched] = []
-    private var weatherEffect: AmbientWeather?
+    private var weatherEffects: [WeatherKind: AmbientWeather] = [:]
     private var nextSanta: TimeInterval = 0
 
     // Controls
     var enabled = true { didSet { applyWeather() } }
-    var weather: WeatherKind = .snow { didSet { if weather != oldValue { applyWeather() } } }
+    var weathers: Set<WeatherKind> = [.snow] { didSet { if weathers != oldValue { applyWeather() } } }
+    /// Single-weather view of `weathers` (used by the follow-the-weather service).
+    var weather: WeatherKind {
+        get { weathers.first ?? .clear }
+        set { weathers = newValue == .clear ? [] : [newValue] }
+    }
     var surgeFlakes = 0              // extra flakes during "bury my desktop"
     var forceSnow = false            // snow even when another weather is picked (bury)
-    var snowFalling: Bool { enabled && (weather == .snow || forceSnow) }
+    var snowFalling: Bool { enabled && (weathers.contains(.snow) || forceSnow) }
     var now: TimeInterval { lastTime }
     private var lastTime: TimeInterval = 0
     private var lastPoll: TimeInterval = 0
-    private let pollInterval: TimeInterval = 1.0 / 30
+    var pollInterval: TimeInterval = Performance.current.poll
     private var texture: SKTexture!
     private let maxChunks = 1600
     private var filledOnce = false
@@ -138,15 +147,15 @@ final class SnowScene: SKScene {
 
     private func applyWeather() {
         guard ground != nil else { return }
-        let want: WeatherKind? = (enabled && weather != .snow) ? weather : nil
-        if weatherEffect?.kind != want {
-            weatherEffect?.finish()
-            weatherEffect = nil
-            if let k = want {
-                let e = AmbientWeather(kind: k, scene: self)
-                weatherEffect = e
-                add(e)
-            }
+        let want = enabled ? weathers.subtracting([.snow, .clear]) : []
+        for (k, e) in weatherEffects where !want.contains(k) {
+            e.finish()
+            weatherEffects[k] = nil
+        }
+        for k in want where weatherEffects[k] == nil {
+            let e = AmbientWeather(kind: k, scene: self)
+            weatherEffects[k] = e
+            add(e)
         }
     }
 
@@ -166,6 +175,7 @@ final class SnowScene: SKScene {
     func unperch(_ p: Perched) { perched.removeAll { $0 === p } }
 
     private func positionPerched(_ p: Perched) {
+        if p.held { return }
         if let id = p.windowID {
             guard let s = windows[id], s.visible else { p.node.isHidden = true; return }
             p.node.isHidden = false
@@ -215,6 +225,7 @@ final class SnowScene: SKScene {
         updateCursor(dt: dt, t: currentTime)
         if cursorInside && cursorSpeed > 60 && !optionHeld { carvePiles() }
         for p in perched { positionPerched(p) }
+        updateGrab(dt: dt)
         // Effects may add new effects while updating (Santa drops a present, bury calls the plough): keep those.
         let running = effects
         effects = []
@@ -232,7 +243,7 @@ final class SnowScene: SKScene {
         stepChunks(dt: dt)
 
         if !snowFalling {
-            let melt = dt * (enabled && (weather == .rain || weather == .storm) ? 3 : 1.2)
+            let melt = dt * (enabled && !weathers.isDisjoint(with: [.rain, .storm]) ? 3 : 1.2)
             ground.melt(by: melt)
             for s in windows.values { s.pile.melt(by: melt) }
         }
@@ -646,5 +657,90 @@ final class SnowScene: SKScene {
             return true
         }
         return SKTexture(image: image)
+    }
+
+    // MARK: - Staying out of the way / ⌘-grab
+
+    /// Snow height under a perched object, relative to its ledge (nil if the ledge is gone).
+    func restOffset(for p: Perched) -> CGFloat? {
+        if let id = p.windowID {
+            guard let s = windows[id], s.visible, let c = s.pile.column(forLocalX: p.localX) else { return nil }
+            return s.pile.height(at: c)
+        }
+        guard let c = ground.column(forLocalX: min(max(p.localX, 0), size.width - 1)) else { return nil }
+        return ground.height(at: c)
+    }
+
+    private var grabbed: Perched?
+    private var grabOffset = CGPoint.zero
+    private var grabStart = CGPoint.zero
+    private var grabMoved = false
+    var commandHeld: Bool { NSEvent.modifierFlags.contains(.command) }
+
+    /// The frontmost perched object under a point (with a little slack).
+    private func perched(at pt: CGPoint, slack: CGFloat) -> Perched? {
+        for p in perched.reversed() where !p.node.isHidden && p.node.parent != nil {
+            let n = p.node
+            guard abs(n.position.x - pt.x) < 260, abs(n.position.y - pt.y) < 260 else { continue }
+            let origin = n.parent.map { convert(CGPoint.zero, from: $0) } ?? .zero
+            let f = n.calculateAccumulatedFrame().offsetBy(dx: origin.x, dy: origin.y).insetBy(dx: -slack, dy: -slack)
+            if f.contains(pt) { return p }
+        }
+        return nil
+    }
+
+    /// Objects fade when the pointer comes close so you can see (and click) what's under them.
+    /// Holding ⌘ brings them back and lets the overlay catch the mouse, but only over an object.
+    private func updateGrab(dt: CGFloat) {
+        let cmd = commandHeld
+        let near = cursorInside ? perched(at: cursor, slack: cmd ? 4 : 36) : nil
+        for p in perched where p !== grabbed {
+            let target: CGFloat = (p === near && !cmd) ? 0.22 : 1
+            p.node.alpha += (target - p.node.alpha) * min(1, dt * 10)
+        }
+        let capture = grabbed != nil || (cmd && near?.draggable == true)
+        if let w = view?.window, w.ignoresMouseEvents == capture {
+            w.ignoresMouseEvents = !capture
+            if capture { NSCursor.openHand.set() } else { NSCursor.arrow.set() }
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let pt = event.location(in: self)
+        guard let p = perched(at: pt, slack: 4), p.draggable else { return }
+        grabbed = p
+        p.held = true
+        grabOffset = CGPoint(x: p.node.position.x - pt.x, y: p.node.position.y - pt.y)
+        grabStart = pt
+        grabMoved = false
+        NSCursor.closedHand.set()
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let p = grabbed else { return }
+        let pt = event.location(in: self)
+        if hypot(pt.x - grabStart.x, pt.y - grabStart.y) > 4 { grabMoved = true }
+        p.node.position = CGPoint(x: pt.x + grabOffset.x, y: pt.y + grabOffset.y)
+        p.node.alpha = 1
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard let p = grabbed else { return }
+        grabbed = nil
+        p.held = false
+        if !grabMoved {
+            // A ⌘-click: let the object react (open a present, knock over a snowman...).
+            let g = CGPoint(x: grabStart.x + screenFrame.minX, y: grabStart.y + screenFrame.minY)
+            handleClick(globalPoint: g, count: event.clickCount)
+        } else {
+            // Set it down on whatever is below: a window top or the ground.
+            let x = min(max(p.node.position.x, 2), size.width - 2)
+            let s = surface(under: x, atOrBelow: p.node.position.y + 2)
+            p.windowID = s.windowID
+            p.localX = x - s.ledgeX
+            p.yOffset = s.top - s.baseY
+            Sound.shared.play(.pop, volume: 0.3)
+        }
+        NSCursor.openHand.set()
     }
 }

@@ -49,8 +49,8 @@ final class AmbientWeather: SceneEffect {
         let w = scene.size.width, h = scene.size.height
         switch kind {
         case .mist:
-            for _ in 0..<12 {
-                let s = glowSprite(.white, size: .random(in: 420...900), alpha: .random(in: 0.05...0.11))
+            for _ in 0..<7 {         // few, large, faint puffs: big transparent sprites are costly to draw
+                let s = glowSprite(.white, size: .random(in: 480...860), alpha: .random(in: 0.07...0.13))
                 s.blendMode = .alpha
                 s.yScale = 0.45
                 s.position = CGPoint(x: .random(in: 0...w), y: .random(in: 0...(h * 0.45)))
@@ -144,7 +144,7 @@ final class AmbientWeather: SceneEffect {
                     let s = scene.surface(under: nx, atOrBelow: pos.y)
                     // Drops fall in front of windows; some hit a ledge they pass, the ground stops them all.
                     if ny <= s.top && (s.windowID == nil || Int.random(in: 0..<10) < 3) {
-                        if Int.random(in: 0..<3) == 0 { splash(at: CGPoint(x: nx, y: s.top)) }
+                        if Int.random(in: 0..<3) == 0 { splash(at: CGPoint(x: nx, y: s.top), ripple: s.windowID == nil) }
                         if finishing || ps.count > want * 2 { remove = true } else { respawnTop(&p, w: w, h: h) }
                     } else if ny < -20 {
                         if finishing { remove = true } else { respawnTop(&p, w: w, h: h) }
@@ -273,8 +273,22 @@ final class AmbientWeather: SceneEffect {
         }
     }
 
-    private func splash(at p: CGPoint) {
-        for _ in 0..<2 {
+    private var ripples = 0
+
+    private func splash(at p: CGPoint, ripple: Bool) {
+        // A ring spreading on the wet ground (or the river).
+        if ripple && ripples < 45 && Int.random(in: 0..<2) == 0 {
+            ripples += 1
+            let w = CGFloat.random(in: 5...8)
+            let r = Shape.ellipse(CGRect(x: -w / 2, y: -w * 0.14, width: w, height: w * 0.28), fill: nil,
+                                  stroke: rgb(0.85, 0.92, 1, 0.7), line: 0.8)
+            r.position = CGPoint(x: p.x, y: max(2, p.y))
+            root.addChild(r)
+            let d = Double.random(in: 0.5...0.8)
+            r.run(.sequence([.group([.scale(to: .random(in: 3...5), duration: d), .fadeOut(withDuration: d)]),
+                             .removeFromParent(), .run { [weak self] in self?.ripples -= 1 }]))
+        }
+        for _ in 0..<(kind == .storm ? 3 : 2) {
             let s = SKSpriteNode(texture: Tex.glow, size: CGSize(width: 3, height: 3))
             s.color = rgb(0.85, 0.92, 1)
             s.colorBlendFactor = 1

@@ -50,7 +50,7 @@ final class CozyRoom: NSObject, NSWindowDelegate {
 
     func hide() {
         stopDecorating()
-        window?.orderOut(nil)
+        Retire.window(window)
         window = nil
         scene = nil
         Settings.shared.roomShown = false

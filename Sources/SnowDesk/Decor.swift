@@ -11,26 +11,37 @@ final class DesktopDecor {
     var fireX: CGFloat? { scene?.fireX }
 
     /// trees: 0 off, 1 a few, 2 a small forest along the bottom.
-    func apply(fire: Bool, trees: Int) {
-        if !fire && trees == 0 {
-            window?.orderOut(nil)
+    func apply(fire: Bool, trees: Int, river: Bool = false, season: Season = .winter) {
+        if !fire && trees == 0 && !river {
+            Retire.window(window)
             window = nil
             scene = nil
             Sound.shared.stopCrackle()
             return
         }
         if window == nil { show() }
+        scene?.season = season
+        scene?.setRiver(river)
         scene?.setFire(fire)
         scene?.setTrees(trees)
-        // Only the flames need a smooth frame rate; twinkling trees are fine at a low rate (saves CPU).
-        (window?.contentView as? SKView)?.preferredFramesPerSecond = fire ? 30 : 8
+        // Flames and flowing water need a smooth frame rate; twinkling trees are fine at a low rate (saves CPU).
+        (window?.contentView as? SKView)?.preferredFramesPerSecond = fire || river ? 30 : 8
     }
 
-    func rebuildForScreenChange(fire: Bool, trees: Int) {
-        window?.orderOut(nil)
+    func setHidden(_ hidden: Bool) {
+        if hidden { window?.orderOut(nil) } else { window?.orderFrontRegardless() }
+    }
+
+    func setPaused(_ paused: Bool) {
+        scene?.isPaused = paused
+        (window?.contentView as? SKView)?.isPaused = paused
+    }
+
+    func rebuildForScreenChange(fire: Bool, trees: Int, river: Bool = false, season: Season = .winter) {
+        Retire.window(window)
         window = nil
         scene = nil
-        apply(fire: fire, trees: trees)
+        apply(fire: fire, trees: trees, river: river, season: season)
     }
 
     private func show() {
@@ -66,6 +77,93 @@ final class DecorScene: SKScene {
     private var treesNode: SKNode?
     private var treeStyle = 0
     private(set) var fireX: CGFloat?
+    private var builtSeason: Season?
+    var season: Season = .winter {
+        didSet {
+            guard season != oldValue else { return }
+            if treesNode != nil { let st = treeStyle; setTrees(0); setTrees(st) }
+            if riverNode != nil { setRiver(false); setRiver(true) }
+        }
+    }
+
+    // MARK: River (along the very bottom; trees step back behind it)
+
+    private var riverNode: SKNode?
+    private var glints: [(node: SKSpriteNode, speed: CGFloat)] = []
+    private let riverH: CGFloat = 34
+    private var baseY: CGFloat { riverNode == nil ? 0 : riverH - 6 }
+
+    func setRiver(_ on: Bool) {
+        guard on != (riverNode != nil) else { return }
+        riverNode?.removeFromParent()
+        riverNode = nil
+        glints.removeAll()
+        if on {
+            let frozen = season == .winter
+            let r = SKNode()
+            r.zPosition = 5
+            let top = frozen ? rgb(0.78, 0.88, 0.97) : (season == .monsoon ? rgb(0.35, 0.45, 0.5) : rgb(0.3, 0.6, 0.78))
+            let deep = frozen ? rgb(0.6, 0.74, 0.9) : (season == .monsoon ? rgb(0.2, 0.28, 0.32) : rgb(0.1, 0.32, 0.5))
+            let tex = Tex.make(4, 64) { ctx, rr in
+                Tex.linear(ctx, [top, deep], [0, 1], from: CGPoint(x: 0, y: rr.maxY), to: .zero)
+            }
+            // Wavy far bank
+            let path = CGMutablePath()
+            path.move(to: .zero)
+            var x: CGFloat = 0
+            let seed = CGFloat.random(in: 0...100)
+            while x <= size.width + 8 {
+                path.addLine(to: CGPoint(x: x, y: riverH + 3 * sin(x * 0.01 + seed) + 1.5 * sin(x * 0.033)))
+                x += 8
+            }
+            path.addLine(to: CGPoint(x: size.width, y: 0))
+            path.closeSubpath()
+            let crop = SKCropNode()
+            crop.maskNode = Shape.node(path, fill: .white)
+            let water = SKSpriteNode(texture: tex, size: CGSize(width: size.width, height: riverH + 6))
+            water.anchorPoint = .zero
+            crop.addChild(water)
+            r.addChild(crop)
+            let bank = Shape.node(path, fill: nil, stroke: bankColor, line: 4)
+            r.addChild(bank)
+            // Moving glints (slow sparkles on ice)
+            for _ in 0..<Int(size.width / 28) {
+                let g = SKSpriteNode(texture: Tex.glow, size: CGSize(width: .random(in: 14...40), height: .random(in: 1.5...3)))
+                g.color = .white
+                g.colorBlendFactor = 1
+                g.alpha = frozen ? .random(in: 0.25...0.6) : .random(in: 0.2...0.5)
+                g.position = CGPoint(x: .random(in: 0...size.width), y: .random(in: 3...(riverH - 6)))
+                g.zPosition = 1
+                r.addChild(g)
+                glints.append((g, frozen ? .random(in: 2...6) : .random(in: 22...48)))
+            }
+            r.alpha = 0
+            r.run(.fadeIn(withDuration: 0.8))
+            addChild(r)
+            riverNode = r
+        }
+        fireNode?.position.y = 4 + baseY
+        if treesNode != nil { let st = treeStyle; setTrees(0); setTrees(st) }     // trees step back behind the water
+    }
+
+    private var bankColor: NSColor {
+        switch season {
+        case .winter: return rgb(0.95, 0.97, 1)
+        case .spring, .summer: return rgb(0.35, 0.6, 0.3)
+        case .autumn: return rgb(0.55, 0.5, 0.25)
+        case .monsoon: return rgb(0.2, 0.4, 0.22)
+        }
+    }
+
+    override func update(_ currentTime: TimeInterval) {
+        guard !glints.isEmpty else { return }
+        let dt: CGFloat = 1.0 / CGFloat(max(1, view?.preferredFramesPerSecond ?? 30))
+        for (g, sp) in glints {
+            g.position.x += sp * dt
+            if g.position.x - g.size.width > size.width { g.position.x = -g.size.width; g.position.y = .random(in: 3...(riverH - 6)) }
+            g.alpha = max(0.1, min(0.7, g.alpha + .random(in: -0.04...0.04)))
+        }
+    }
 
     override func didMove(to view: SKView) {
         backgroundColor = .clear
@@ -149,7 +247,7 @@ final class DecorScene: SKScene {
             glow.run(.repeatForever(.sequence([.fadeAlpha(to: 0.08, duration: 0.3), .fadeAlpha(to: 0.13, duration: 0.25)])))
             inner.run(.repeatForever(.sequence([.fadeAlpha(to: 0.25, duration: 0.18), .fadeAlpha(to: 0.4, duration: 0.22)])))
 
-            root.position = CGPoint(x: size.width - fp.size.width / 2 - 24, y: 4)
+            root.position = CGPoint(x: size.width - fp.size.width / 2 - 24, y: 4 + baseY)
             root.zPosition = 10          // always in front of the forest
             root.alpha = 0
             root.run(.fadeIn(withDuration: 0.8))
@@ -170,10 +268,11 @@ final class DecorScene: SKScene {
     // MARK: Trees
 
     func setTrees(_ style: Int) {
-        guard style != treeStyle || (style > 0) != (treesNode != nil) else { return }
+        guard style != treeStyle || (style > 0) != (treesNode != nil) || builtSeason != season else { return }
         treesNode?.removeFromParent()
         treesNode = nil
         treeStyle = style
+        builtSeason = season
         guard style > 0 else { return }
         let lights = SKNode()
         let built = style == 2 ? makeForest(lights: lights) : makeFewTrees(lights: lights)
@@ -192,7 +291,7 @@ final class DecorScene: SKScene {
     /// The trees never move, so draw them once into a single texture; only the twinkles stay live.
     private func flatten(_ built: SKNode, lights: SKNode) -> SKNode {
         let out = SKNode()
-        let band = CGRect(x: 0, y: 0, width: size.width, height: 170)
+        let band = CGRect(x: 0, y: 0, width: size.width, height: 210)
         if let view, let tex = view.texture(from: built, crop: band) {
             let sprite = SKSpriteNode(texture: tex, size: band.size)
             sprite.anchorPoint = .zero
@@ -206,8 +305,13 @@ final class DecorScene: SKScene {
     }
 
     private func tree(_ variant: Int, height h: CGFloat, at x: CGFloat, y: CGFloat, tint: CGFloat, z: CGFloat, into root: SKNode, lights: SKNode) {
-        let a = Models3D.pineAspect(variant)
-        let t = SKSpriteNode(texture: Models3D.pine(variant: variant, height: 120), size: CGSize(width: h * a, height: h))
+        let winter = season == .winter
+        // Outside winter, about half the trees are leafy ones dressed for the season.
+        let leafy = !winter && variant != 1 && Int.random(in: 0..<2) == 0
+        let a = leafy ? Models3D.broadleafAspect : Models3D.pineAspect(variant)
+        let tex = leafy ? Models3D.broadleaf(season: season, variant: Int.random(in: 0..<3), height: 120)
+                        : Models3D.pine(variant: winter ? variant : (variant == 1 ? 0 : variant), height: 120, snowy: winter)
+        let t = SKSpriteNode(texture: tex, size: CGSize(width: h * (leafy ? a * 1.05 : a), height: leafy ? h * 0.95 : h))
         t.anchorPoint = CGPoint(x: 0.5, y: 0.02)
         t.position = CGPoint(x: x, y: y)
         t.zPosition = z
@@ -216,7 +320,7 @@ final class DecorScene: SKScene {
             t.colorBlendFactor = tint
         }
         root.addChild(t)
-        if variant == 1 && tint < 0.3 {     // a faint twinkle on the lit trees
+        if variant == 1 && tint < 0.3 && winter {     // a faint twinkle on the lit trees
             for _ in 0..<4 {
                 let g = glowSprite([rgb(1, 0.75, 0.3), rgb(1, 0.35, 0.3), rgb(0.5, 0.8, 1)].randomElement()!, size: max(5, h * 0.08))
                 g.position = CGPoint(x: x + .random(in: -h * 0.17...h * 0.17), y: y + .random(in: h * 0.2...h * 0.8))
@@ -238,13 +342,24 @@ final class DecorScene: SKScene {
         ]
         for (i, s) in spots.enumerated() {
             let z = CGFloat(i) * 0.01
-            tree(s.2, height: s.1, at: s.0, y: 4, tint: 0, z: z, into: root, lights: lights)
-            let drift = Shape.ellipse(CGRect(x: -s.1 * 0.32, y: -4, width: s.1 * 0.64, height: 10), fill: rgb(0.94, 0.96, 1))
-            drift.position = CGPoint(x: s.0, y: 4)
+            tree(s.2, height: s.1, at: s.0, y: 4 + baseY, tint: 0, z: z, into: root, lights: lights)
+            let drift = Shape.ellipse(CGRect(x: -s.1 * 0.32, y: -4, width: s.1 * 0.64, height: 10), fill: groundColors[2])
+            drift.position = CGPoint(x: s.0, y: 4 + baseY)
             drift.zPosition = z + 0.001
             root.addChild(drift)
         }
         return root
+    }
+
+    /// Far, middle and near ground colours for the season.
+    private var groundColors: [NSColor] {
+        switch season {
+        case .winter: return [rgb(0.80, 0.85, 0.94), rgb(0.88, 0.91, 0.97), rgb(0.95, 0.97, 1)]
+        case .spring: return [rgb(0.45, 0.62, 0.45), rgb(0.42, 0.66, 0.38), rgb(0.45, 0.72, 0.36)]
+        case .summer: return [rgb(0.36, 0.55, 0.36), rgb(0.32, 0.58, 0.3), rgb(0.36, 0.64, 0.28)]
+        case .autumn: return [rgb(0.55, 0.5, 0.38), rgb(0.62, 0.52, 0.3), rgb(0.7, 0.55, 0.28)]
+        case .monsoon: return [rgb(0.25, 0.42, 0.3), rgb(0.22, 0.46, 0.27), rgb(0.24, 0.5, 0.25)]
+        }
     }
 
     /// A small snowy forest along the whole bottom edge: three rows, the far ones smaller and paler.
@@ -283,13 +398,13 @@ final class DecorScene: SKScene {
             while x < w + 20 {
                 let h = CGFloat.random(in: row.1)
                 if r > 0, let span = fireSpan, span.contains(x) { x = span.upperBound + 4; continue }
-                tree(pick(front: r == 2), height: h, at: x, y: row.0 + .random(in: -2...2), tint: row.3,
+                tree(pick(front: r == 2), height: h, at: x, y: row.0 + baseY + .random(in: -2...2), tint: row.3,
                      z: row.4 + CGFloat(k % 50) * 0.002, into: root, lights: lights)
                 x += CGFloat.random(in: row.2)
                 k += 1
             }
             // snowy ground in front of each row's trunks
-            ground(height: row.0 + 6, color: r == 0 ? rgb(0.80, 0.85, 0.94) : (r == 1 ? rgb(0.88, 0.91, 0.97) : rgb(0.95, 0.97, 1)),
+            ground(height: row.0 + baseY + 6, color: groundColors[r],
                    z: row.4 + 0.15)
         }
         return root

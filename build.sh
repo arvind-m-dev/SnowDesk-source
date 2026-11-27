@@ -5,13 +5,16 @@ cd "$(dirname "$0")"
 
 # Universal binary: runs natively on Apple silicon and Intel Macs.
 ARCHS="--arch arm64 --arch x86_64"
-swift build -c release $ARCHS
-BIN="$(swift build -c release $ARCHS --show-bin-path)/SnowDesk"
+# Optimise for size and drop dead code: a smaller download that starts faster.
+FLAGS="-Xswiftc -Osize -Xlinker -dead_strip"
+swift build -c release $ARCHS $FLAGS
+BIN="$(swift build -c release $ARCHS $FLAGS --show-bin-path)/SnowDesk"
 
 APP="SnowDesk.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/SnowDesk"
+strip -x -S "$APP/Contents/MacOS/SnowDesk"      # remove debug symbols (not needed to run)
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -23,8 +26,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleIdentifier</key><string>local.snowdesk.app</string>
     <key>CFBundleExecutable</key><string>SnowDesk</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>1.0</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleShortVersionString</key><string>1.1</string>
+    <key>CFBundleVersion</key><string>2</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>

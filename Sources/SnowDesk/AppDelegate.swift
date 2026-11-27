@@ -3,6 +3,7 @@ import SpriteKit
 import ServiceManagement
 import SceneKit
 import Metal
+import Carbon
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var overlays: [(window: NSWindow, scene: SnowScene)] = []
@@ -11,6 +12,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let room = CozyRoom()
     private let decor = DesktopDecor()
     private var clickMonitor: Any?
+    private var calendarTimer: Timer?
+    private var hideKey: HotKey?
+    private var hiddenAll = false
 
     private var scenes: [SnowScene] { overlays.map(\.scene) }
     private var primary: SnowScene? { overlays.first?.scene }
@@ -26,16 +30,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(screensChanged),
                                                name: NSApplication.didChangeScreenParametersNotification, object: nil)
         // Clicks anywhere (for presents and double-click-to-thaw). Mouse monitoring needs no special permission.
+        // Plain clicks always belong to your apps; SnowDesk only reacts to ⌘-clicks (sky effects like fireworks).
+        // ⌘ over an object (snowman, present...) is caught by the overlay itself so it can be dragged.
         clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown) { [weak self] e in
             let p = NSEvent.mouseLocation
-            self?.scenes.forEach { $0.handleClick(globalPoint: p, count: e.clickCount) }
+            if e.modifierFlags.contains(.command) { self?.scenes.forEach { $0.handleClick(globalPoint: p, count: e.clickCount) } }
             if e.clickCount >= 2 { self?.scenes.forEach { $0.thawFrost() } }     // a double-click thaws every display
         }
+
+        // Rest completely while the screen sleeps or is locked; follow Low Power Mode.
+        let ws = NSWorkspace.shared.notificationCenter
+        ws.addObserver(self, selector: #selector(screensAsleep), name: NSWorkspace.screensDidSleepNotification, object: nil)
+        ws.addObserver(self, selector: #selector(screensAwake), name: NSWorkspace.screensDidWakeNotification, object: nil)
+        ws.addObserver(self, selector: #selector(screensAsleep), name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
+        ws.addObserver(self, selector: #selector(screensAwake), name: NSWorkspace.sessionDidBecomeActiveNotification, object: nil)
+        let dn = DistributedNotificationCenter.default()
+        dn.addObserver(self, selector: #selector(screensAsleep), name: NSNotification.Name("com.apple.screenIsLocked"), object: nil)
+        dn.addObserver(self, selector: #selector(screensAwake), name: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(applyPerformance), name: .NSProcessInfoPowerStateDidChange, object: nil)
+
+        // ⌃⌥S hides or shows everything.
+        hideKey = HotKey(keyCode: UInt32(kVK_ANSI_S), modifiers: UInt32(controlKey | optionKey)) { [weak self] in self?.toggleHidden() }
 
         WeatherService.shared.onChange = { [weak self] kind in self?.setWeather(kind, fromService: true) }
         WeatherService.shared.start()
         if settings.roomShown { room.show() }
         applyDecor()
+        checkCalendar()
+        // Seasons and festivals change with the date: look again every hour.
+        calendarTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in self?.checkCalendar() }
         runDevArguments()
     }
 
@@ -115,6 +138,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     case "lights": scenes.forEach { $0.setLights(.twinkle) }
                     case "globe": globe()
                     case "room": room.show()
+                    case "skier": primary?.sendRider(.skier)
+                    case "forest": settings.treeStyle = 2; applyDecor()
+                    case "grabtest":
+                        guard let sc = primary, let win = overlays.first?.window else { break }
+                        sc.snowmen.build(.classic, in: sc, at: 300)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                            self.log("grab: ignoresMouse(before)=\(win.ignoresMouseEvents)")
+                            let p0 = sc.perched.last!.node.position
+                            func ev(_ t: NSEvent.EventType, _ p: CGPoint) -> NSEvent {
+                                NSEvent.mouseEvent(with: t, location: p, modifierFlags: .command, timestamp: 0, windowNumber: win.windowNumber,
+                                                   context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+                            }
+                            let a = CGPoint(x: p0.x, y: p0.y + 20)
+                            sc.mouseDown(with: ev(.leftMouseDown, a))
+                            sc.mouseDragged(with: ev(.leftMouseDragged, CGPoint(x: 700, y: 500)))
+                            sc.mouseDragged(with: ev(.leftMouseDragged, CGPoint(x: 900, y: 600)))
+                            sc.mouseUp(with: ev(.leftMouseUp, CGPoint(x: 900, y: 600)))
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                                let p = sc.perched.last!
+                                self.log("grab: from=\(p0) to=\(p.node.position) window=\(p.windowID.map(String.init) ?? "ground") count=\(sc.snowmen.count)")
+                                sc.mouseDown(with: ev(.leftMouseDown, CGPoint(x: p.node.position.x, y: p.node.position.y + 20)))
+                                sc.mouseUp(with: ev(.leftMouseUp, CGPoint(x: p.node.position.x, y: p.node.position.y + 20)))
+                                self.log("grab: after cmd-click count=\(sc.snowmen.count) ignoresMouse=\(win.ignoresMouseEvents)")
+                            }
+                        }
+                    case "hidetest":
+                        toggleHidden()
+                        log("hide: visible=\(overlays.map { $0.window.isVisible }) paused=\(scenes.map(\.isPaused))")
+                        toggleHidden()
+                        log("show: visible=\(overlays.map { $0.window.isVisible }) paused=\(scenes.map(\.isPaused))")
+                    case "sledder": primary?.sendRider(.sledder)
+                    case "birds": scenes.forEach { $0.setScenery([.birds, .butterflies]) }
+                    case "bats": scenes.forEach { $0.setScenery([.birds, .bats]) }
+                    case "stress":
+                        // Everything on, events cycling, riders and snowmen; logs node counts and memory.
+                        scenes.forEach { $0.setScenery(Set(Scenery.allCases)); $0.weathers = [.snow, .rain, .leaves, .mist] }
+                        var k = 0
+                        Timer.scheduledTimer(withTimeInterval: 10, repeats: true) { [weak self] _ in
+                            guard let self, let sc = self.primary else { return }
+                            k += 1
+                            if k % 2 == 0 { sc.setEvent(EventKind.allCases[(k / 2) % EventKind.allCases.count]) }
+                            sc.sendRider(k % 3 == 0 ? .sledder : .skier)
+                            sc.snowmen.build(SnowmanStyle.allCases[k % SnowmanStyle.allCases.count], in: sc)
+                            if k % 4 == 0 { sc.snowGlobe() }
+                            if k % 5 == 0 { self.toggleHidden(); self.toggleHidden() }
+                            var nodes = 0
+                            sc.enumerateChildNodes(withName: "//*") { _, _ in nodes += 1 }
+                            var info = mach_task_basic_info()
+                            var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size) / 4
+                            _ = withUnsafeMutablePointer(to: &info) { $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count) } }
+                            self.log("stress t=\(k * 10)s nodes=\(nodes) effects=\(sc.effects.count) perched=\(sc.perched.count) flakes=\(sc.flakes.count) chunks=\(sc.chunks.count) rssMB=\(info.resident_size / 1_048_576)")
+                        }
+                    case "river": settings.scenery.insert(.river); applyDecor()
+                    case let x where x.hasPrefix("season-"):
+                        if let se = Season(rawValue: String(x.dropFirst(7))) { applySeason(se, wallpaper: false) }
+                    case let x where x.hasPrefix("event-"):
+                        if let ev = EventKind(rawValue: String(x.dropFirst(6))) { scenes.forEach { $0.setEvent(ev) } }
+                    case let x where x.hasPrefix("snowmen"):
+                        if let sc = primary {
+                            for (i, st) in SnowmanStyle.allCases.enumerated() where st != .melting {
+                                sc.snowmen.build(st, in: sc, at: sc.size.width * (0.08 + CGFloat(i) * 0.15))
+                            }
+                        }
+                    case let x where x.hasPrefix("weathers-"):
+                        let ks = Set(x.dropFirst(9).split(separator: "+").compactMap { WeatherKind(rawValue: String($0)) })
+                        scenes.forEach { $0.weathers = ks }
                     default: if let k = WeatherKind(rawValue: a) { scenes.forEach { $0.weather = k } }
                     }
                 }
@@ -125,6 +214,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [self] in
                 for (i, sc) in scenes.enumerated() {
                     let kinds = sc.effects.map { String(describing: type(of: $0)) }
+                    let bats = sc.perched.filter { abs($0.node.zRotation - .pi) < 0.01 }.count
+                    log("scene\(i): hangingBats=\(bats) perchedNodes=\(sc.perched.count)")
                     log("scene\(i): flakes=\(sc.flakes.count) chunks=\(sc.chunks.count) perched=\(sc.perched.count) slope=\(sc.ground.maxSlope) ploughs=\(sc.ground.ploughsActive) windows=\(sc.visibleWindows.count) effects=\(kinds)")
                 }
                 for (i, o) in overlays.enumerated() {
@@ -164,14 +255,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Keep long-lived toggles across rebuilds.
         for o in overlays {                     // shut the old ones down properly (mic, effects, window)
             o.scene.setLights(.off)
-            (o.window.contentView as? SKView)?.presentScene(nil)
-            o.window.orderOut(nil)
-            o.window.close()
+            Retire.window(o.window)
         }
         overlays = []
-        for (i, screen) in Displays.active.enumerated() {
+        let skip = ProcessInfo.processInfo.arguments.contains("--skip-overlay")   // dev: isolate window issues
+        for (i, screen) in Displays.active.enumerated() where !skip {
             let frame = screen.frame
-            let window = NSWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
+            // A non-activating panel: even when it briefly catches a ⌘-drag it never takes focus from your app.
+            let window = NSPanel(contentRect: frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            window.hidesOnDeactivate = false
+            window.becomesKeyOnlyIfNeeded = true
             window.isOpaque = false
             window.backgroundColor = .clear
             window.hasShadow = false
@@ -179,17 +272,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // Above app windows (and floating ones like picture-in-picture) but just below the Dock and menu bar,
             // so an auto-hiding Dock still slides up and is never covered by snow.
             window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.dockWindow)) - 1)
-            window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+            window.collectionBehavior = [.canJoinAllSpaces, .transient, .fullScreenAuxiliary, .ignoresCycle]   // hidden during Mission Control
             window.isReleasedWhenClosed = false
 
-            let view = SKView(frame: NSRect(origin: .zero, size: frame.size))
+            let view = OverlaySKView(frame: NSRect(origin: .zero, size: frame.size))
             view.allowsTransparency = true
             view.ignoresSiblingOrder = true
-            view.preferredFramesPerSecond = 60
+            view.preferredFramesPerSecond = Performance.current.fps
 
             let scene = SnowScene(screenFrame: frame, isPrimary: i == 0)
             scene.enabled = settings.snowing
-            scene.weather = settings.weather
+            scene.weathers = settings.weathers
             scene.targetFlakes = settings.intensity.flakeCount
             view.presentScene(scene)
 
@@ -199,19 +292,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             overlays.append((window, scene))
 
             if settings.lightsMode != .off { scene.setLights(settings.lightsMode) }
+            DispatchQueue.main.async { [settings] in
+                scene.setScenery(settings.scenery)
+                scene.setEvent(settings.activeEvent)
+            }
+            if hiddenAll { window.orderOut(nil) }
+            if hiddenAll || asleep { scene.isPaused = true; view.isPaused = true }
         }
     }
 
     @objc private func screensChanged() {
         buildOverlays()
         room.rebuildForScreenChange()
-        decor.rebuildForScreenChange(fire: settings.fireplace, trees: settings.treeStyle)
+        decor.rebuildForScreenChange(fire: settings.fireplace, trees: settings.treeStyle, river: settings.scenery.contains(.river), season: settings.season)
         applyDecor()
+        decor.setHidden(hiddenAll)
     }
 
     /// Fireplace and trees sit on the desktop layer, behind all app windows.
     private func applyDecor() {
-        decor.apply(fire: settings.fireplace, trees: settings.treeStyle)
+        if ProcessInfo.processInfo.arguments.contains("--skip-decor") { return }
+        decor.apply(fire: settings.fireplace, trees: settings.treeStyle, river: settings.scenery.contains(.river), season: settings.season)
         primary?.setFireWarmth(at: decor.fireX.map { $0 + (Displays.home?.frame.minX ?? 0) })
     }
 
@@ -220,11 +321,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
 
+        let hide = item(hiddenAll ? "Show SnowDesk" : "Hide SnowDesk for Now", #selector(toggleHidden))
+        hide.keyEquivalent = "s"
+        hide.keyEquivalentModifierMask = [.control, .option]
+        menu.addItem(hide)
+        menu.addItem(.separator())
         menu.addItem(item("Let It Snow", #selector(toggleEnabled), on: settings.snowing))
 
         let weather = NSMenu()
+        weather.addItem(item("Mix Several Weathers", #selector(toggleMix), on: settings.mixWeathers))
+        weather.addItem(.separator())
+        let chosen = settings.weathers
         for (i, k) in WeatherKind.allCases.enumerated() {
-            let it = item(k.title, #selector(pickWeather(_:)), on: settings.weather == k)
+            let it = item(k.title, #selector(pickWeather(_:)), on: k == .clear ? chosen.isEmpty : chosen.contains(k))
             it.tag = i
             weather.addItem(it)
         }
@@ -236,7 +345,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             weather.addItem(item("Stop Following the Weather", #selector(stopFollowing)))
         }
         weather.addItem(item(settings.cityName == nil ? "Follow the Weather in My City…" : "Change City…", #selector(followCity)))
-        menu.addItem(submenu("Weather", weather))
+        menu.addItem(submenu(settings.mixWeathers && chosen.count > 1 ? "Weather (\(chosen.count) mixed)" : "Weather", weather))
+
+        let seasons = NSMenu()
+        seasons.addItem(item("Follow the Calendar", #selector(toggleAutoSeason), on: settings.autoSeason))
+        seasons.addItem(.separator())
+        for (i, se) in Season.allCases.enumerated() {
+            let it = item(se.title, #selector(pickSeason(_:)), on: settings.season == se)
+            it.tag = i
+            seasons.addItem(it)
+        }
+        seasons.addItem(.separator())
+        seasons.addItem(item("Change Wallpaper Too", #selector(toggleThemeWallpaper), on: settings.themeWallpaper))
+        menu.addItem(submenu("Season: \(settings.season.title)", seasons))
+
+        let events = NSMenu()
+        let today = EventKind.on().map { " (now: \($0.title))" } ?? ""
+        let auto = item("Automatic by Date" + today, #selector(pickEvent(_:)), on: settings.eventChoice == "auto")
+        auto.representedObject = "auto"
+        events.addItem(auto)
+        let none = item("None", #selector(pickEvent(_:)), on: settings.eventChoice == "")
+        none.representedObject = ""
+        events.addItem(none)
+        events.addItem(.separator())
+        for ev in EventKind.allCases {
+            let it = item(ev.title, #selector(pickEvent(_:)), on: settings.eventChoice == ev.rawValue)
+            it.representedObject = ev.rawValue
+            events.addItem(it)
+        }
+        menu.addItem(submenu("Events and Festivals", events))
+
+        let nature = NSMenu()
+        for (i, sc) in Scenery.allCases.enumerated() {
+            let it = item(sc.title, #selector(toggleScenery(_:)), on: settings.scenery.contains(sc))
+            it.tag = i
+            nature.addItem(it)
+        }
+        nature.addItem(.separator())
+        nature.addItem(item("Birds and Bats Perch on Buttons, Rows and Lines", #selector(toggleUIPerches), on: UIPerches.allowed))
+        nature.addItem(.separator())
+        nature.addItem(item("Send a Skier Now", #selector(sendSkier)))
+        nature.addItem(item("Send a Sledder Now", #selector(sendSledder)))
+        menu.addItem(submenu("Nature and Life", nature))
+
+        let builds = NSMenu()
+        for st in SnowmanStyle.allCases {
+            let it = item(st.title, #selector(buildSnowman(_:)))
+            it.tag = st.rawValue
+            builds.addItem(it)
+        }
+        builds.addItem(.separator())
+        builds.addItem(item("Surprise Me", #selector(buildSnowman(_:))))
+        builds.items.last?.tag = -1
+        builds.addItem(item("Knock Them All Down", #selector(knockSnowmen)))
+        let tip = NSMenuItem(title: "Click a snowman to knock it over", action: nil, keyEquivalent: "")
+        tip.isEnabled = false
+        builds.addItem(tip)
+        menu.addItem(submenu("Build a Snowman", builds))
 
         let intensity = NSMenu()
         for level in Intensity.allCases {
@@ -280,12 +445,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(submenu("Christmas Tree", roomMenu))
 
         let walls = NSMenu()
-        for (i, name) in Wallpapers.names.enumerated() {
-            let it = item(name, #selector(pickWallpaper(_:)))
-            it.tag = i
-            walls.addItem(it)
+        for (g, (heading, indices)) in Wallpapers.groups.enumerated() {
+            if g > 0 { walls.addItem(.separator()) }
+            walls.addItem(NSMenuItem.sectionHeader(title: heading))
+            for i in indices {
+                let it = item(Wallpapers.names[i], #selector(pickWallpaper(_:)))
+                it.tag = i
+                walls.addItem(it)
+            }
         }
-        menu.addItem(submenu("Winter Wallpapers", walls))
+        menu.addItem(submenu("Wallpapers", walls))
 
         menu.addItem(item("Snow Globe", #selector(globe)))
         menu.addItem(item("Shake Off All Snow", #selector(clearSnow)))
@@ -305,6 +474,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             menu.addItem(submenu("Show On", displays))
         }
+        let perf = NSMenu()
+        for p in Performance.allCases {
+            let it = item(p.title, #selector(setPerformance(_:)), on: Performance.chosen == p)
+            it.tag = p.rawValue
+            perf.addItem(it)
+        }
+        if ProcessInfo.processInfo.isLowPowerModeEnabled {
+            perf.addItem(.separator())
+            let note = NSMenuItem(title: "Low Power Mode is on: using Battery Saver", action: nil, keyEquivalent: "")
+            note.isEnabled = false
+            perf.addItem(note)
+        }
+        menu.addItem(submenu("Performance", perf))
         menu.addItem(item("Sounds", #selector(toggleSounds), on: settings.sounds))
         menu.addItem(item("Santa Drops By Now and Then", #selector(toggleSantaVisits), on: settings.santaVisits))
         menu.addItem(item("Open at Login", #selector(toggleLogin), on: SMAppService.mainApp.status == .enabled))
@@ -316,7 +498,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                   "Let go of ⌥ to drop it; stack three for a snowman",
                   "Fling it while letting go to throw a snowball",
                   "Shake the mouse for a snow globe",
-                  "Click a present to open it",
+                  "Plain clicks always go to your apps; things fade when the pointer is near",
+                  "Hold ⌘ and drag a snowman, present or decoration to move it",
+                  "⌘-click a present to open it, or a snowman to knock it over",
+                  "⌘-click the sky during New Year, Diwali or Holi",
+                  "Move the pointer near a perched bird or hanging bat to scare it off",
+                  "Press ⌃⌥S to hide or show SnowDesk",
                   "Frozen screen: move the pointer to scrape, double-click to thaw"] {
             let it = NSMenuItem(title: t, action: nil, keyEquivalent: "")
             it.isEnabled = false
@@ -348,14 +535,161 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func pickWeather(_ sender: NSMenuItem) {
-        setWeather(WeatherKind.allCases[sender.tag], fromService: false)
+        let k = WeatherKind.allCases[sender.tag]
+        if WeatherService.shared.isFollowing { WeatherService.shared.stop() }
+        var set = settings.weathers
+        if k == .clear {
+            set = []
+        } else if settings.mixWeathers {
+            if set.contains(k) { set.remove(k) } else { set.insert(k) }
+        } else {
+            set = [k]
+        }
+        setWeathers(set)
     }
 
     private func setWeather(_ kind: WeatherKind, fromService: Bool) {
         if !fromService && WeatherService.shared.isFollowing { WeatherService.shared.stop() }
-        settings.weather = kind
-        scenes.forEach { $0.weather = kind }
+        setWeathers(kind == .clear ? [] : [kind])
     }
+
+    private func setWeathers(_ set: Set<WeatherKind>) {
+        settings.weathers = set
+        scenes.forEach { $0.weathers = set }
+    }
+
+    @objc private func setPerformance(_ sender: NSMenuItem) {
+        Performance.chosen = Performance(rawValue: sender.tag) ?? .balanced
+        applyPerformance()
+    }
+
+    @objc private func applyPerformance() {
+        DispatchQueue.main.async { [self] in
+            let p = Performance.current
+            for o in overlays {
+                (o.window.contentView as? SKView)?.preferredFramesPerSecond = p.fps
+                o.scene.pollInterval = p.poll
+                o.scene.targetFlakes = settings.intensity.flakeCount
+            }
+        }
+    }
+
+    private var asleep = false
+    @objc private func screensAsleep() { asleep = true; updatePaused() }
+    @objc private func screensAwake() { asleep = false; updatePaused() }
+
+    /// Nothing is drawn while hidden, asleep or locked, so SpriteKit stops entirely (no CPU, no GPU).
+    private func updatePaused() {
+        let stop = hiddenAll || asleep
+        for o in overlays {
+            o.scene.isPaused = stop
+            (o.window.contentView as? SKView)?.isPaused = stop
+        }
+        decor.setPaused(stop)
+    }
+
+    @objc private func toggleHidden() {
+        hiddenAll.toggle()
+        for o in overlays {
+            if hiddenAll { o.window.orderOut(nil) } else { o.window.orderFrontRegardless() }
+        }
+        decor.setHidden(hiddenAll)
+        updatePaused()
+    }
+
+    @objc private func toggleMix() { settings.mixWeathers.toggle() }
+
+    // MARK: Seasons, events, nature
+
+    /// Dress everything for a season: weather, scenery, trees, river and (optionally) wallpaper.
+    private func applySeason(_ se: Season, wallpaper: Bool) {
+        settings.season = se
+        if !settings.snowing { settings.snowing = true; scenes.forEach { $0.enabled = true } }
+        setWeathers(se.weathers)
+        settings.scenery = se.scenery
+        scenes.forEach { $0.setScenery(se.scenery) }
+        if settings.treeStyle == 0 { settings.treeStyle = 2 }
+        applyDecor()
+        if wallpaper { setWallpaper(se.wallpaper) }
+    }
+
+    @objc private func pickSeason(_ sender: NSMenuItem) {
+        settings.autoSeason = false
+        applySeason(Season.allCases[sender.tag], wallpaper: settings.themeWallpaper)
+    }
+
+    @objc private func toggleAutoSeason() {
+        settings.autoSeason.toggle()
+        if settings.autoSeason { checkCalendar(force: true) }
+    }
+
+    @objc private func toggleThemeWallpaper() { settings.themeWallpaper.toggle() }
+
+    private func applyEvent(_ ev: EventKind?) {
+        scenes.forEach { $0.setEvent(ev) }
+        guard let ev else { return }
+        if let w = ev.weathers { setWeathers(w) }
+        if ev == .christmas && settings.lightsMode == .off {
+            settings.lightsMode = .twinkle
+            scenes.forEach { $0.setLights(.twinkle) }
+        }
+        if settings.themeWallpaper, let wp = ev.wallpaper { setWallpaper(wp) }
+    }
+
+    @objc private func pickEvent(_ sender: NSMenuItem) {
+        settings.eventChoice = sender.representedObject as? String ?? "auto"
+        applyEvent(settings.activeEvent)
+        UserDefaults.standard.set(settings.activeEvent?.rawValue ?? "", forKey: "lastEvent")
+    }
+
+    /// Follows the calendar: a new season (when automatic) or a festival starting or ending.
+    private func checkCalendar(force: Bool = false) {
+        if settings.autoSeason {
+            let se = Season.current(latitude: settings.cityName == nil ? 1 : settings.cityLat)
+            if se != settings.season || force { applySeason(se, wallpaper: settings.themeWallpaper) }
+        }
+        let ev = settings.activeEvent
+        let key = "lastEvent"
+        if UserDefaults.standard.string(forKey: key) != (ev?.rawValue ?? "") {
+            UserDefaults.standard.set(ev?.rawValue ?? "", forKey: key)
+            applyEvent(ev)
+        } else {
+            scenes.forEach { $0.setEvent(ev) }
+        }
+    }
+
+    @objc private func toggleScenery(_ sender: NSMenuItem) {
+        let sc = Scenery.allCases[sender.tag]
+        var set = settings.scenery
+        if set.contains(sc) { set.remove(sc) } else { set.insert(sc) }
+        settings.scenery = set
+        scenes.forEach { $0.setScenery(set) }
+        if sc == .river { applyDecor() }
+    }
+
+    @objc private func toggleUIPerches() {
+        if UIPerches.allowed { UIPerches.wanted = false; return }
+        UIPerches.wanted = true
+        if !UIPerches.requestAccess() {
+            let a = NSAlert()
+            a.messageText = "Let SnowDesk see buttons and rows"
+            a.informativeText = "To perch on buttons, rows, toolbars and dividers inside your apps, SnowDesk needs Accessibility access. It only reads where things are on screen, never their contents, and never clicks or types.\n\nTurn on SnowDesk in System Settings › Privacy & Security › Accessibility. Birds and bats start using it within a few seconds."
+            a.addButton(withTitle: "OK")
+            NSApp.activate(ignoringOtherApps: true)
+            a.runModal()
+        }
+    }
+
+    @objc private func sendSkier() { primary?.sendRider(.skier) }
+    @objc private func sendSledder() { primary?.sendRider(.sledder) }
+
+    @objc private func buildSnowman(_ sender: NSMenuItem) {
+        guard let sc = primary else { return }
+        let style = SnowmanStyle(rawValue: sender.tag) ?? SnowmanStyle.allCases.randomElement()!
+        sc.snowmen.build(style, in: sc)
+    }
+
+    @objc private func knockSnowmen() { scenes.forEach { $0.snowmen.knockAll(in: $0) } }
 
     @objc private func followCity() {
         let alert = NSAlert()
@@ -424,10 +758,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !room.isShown { room.show() }
     }
 
-    @objc private func pickWallpaper(_ sender: NSMenuItem) {
+    @objc private func pickWallpaper(_ sender: NSMenuItem) { setWallpaper(sender.tag) }
+
+    private func setWallpaper(_ index: Int) {
         // The cozy room is drawn over the wallpaper, so it would hide the new one.
         if room.isShown { room.hide() }
-        Wallpapers.apply(sender.tag) { error in
+        Wallpapers.apply(index) { error in
             guard let error else { return }
             let a = NSAlert()
             a.messageText = "Couldn't set the wallpaper"
@@ -461,4 +797,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             alert.runModal()
         }
     }
+}
+
+/// Lets the very first click reach the scene (for ⌘-drag) without activating SnowDesk.
+final class OverlaySKView: SKView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }

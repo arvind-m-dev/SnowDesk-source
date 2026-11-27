@@ -4,7 +4,7 @@ import AVFoundation
 /// Strings of fairy lights along the top of every window.
 final class LightsEffect: SceneEffect {
     private struct Bulb {
-        let core: SKShapeNode
+        let core: SKNode
         let glow: SKSpriteNode
         let x: CGFloat
         let phase: CGFloat
@@ -14,7 +14,7 @@ final class LightsEffect: SceneEffect {
 
     private final class Strand {
         let root = SKNode()
-        var wire = SKShapeNode()
+        var wire = SKNode()
         var bulbs: [Bulb] = []
         var width: CGFloat = 0
     }
@@ -133,9 +133,10 @@ final class LightsEffect: SceneEffect {
             path.addLine(to: CGPoint(x: x, y: wireY(x)))
             x += 5
         }
-        let wire = SKShapeNode(path: path)
-        wire.strokeColor = rgb(0.15, 0.25, 0.15, 0.9)
-        wire.lineWidth = 1.2
+        let wireShape = SKShapeNode(path: path)
+        wireShape.strokeColor = rgb(0.15, 0.25, 0.15, 0.9)
+        wireShape.lineWidth = 1.2
+        let wire = Bake.sprite(wireShape)
         strand.root.addChild(wire)
         strand.wire = wire
 
@@ -146,9 +147,10 @@ final class LightsEffect: SceneEffect {
             let y = wireY(bx) - 5
             let glow = glowSprite(color, size: 24)
             glow.position = CGPoint(x: bx, y: y)
-            let core = Shape.ellipse(CGRect(x: -2.6, y: -4.5, width: 5.2, height: 9), fill: color)
+            let bulb = Shape.ellipse(CGRect(x: -2.6, y: -4.5, width: 5.2, height: 9), fill: color)
+            bulb.addChild(Shape.rect(CGRect(x: -1.8, y: 3.5, width: 3.6, height: 3), radius: 0.5, fill: rgb(0.2, 0.25, 0.2)))
+            let core = Bake.sprite(bulb, key: "bulb-\(i % LightsEffect.colors.count)")
             core.position = CGPoint(x: bx, y: y)
-            core.addChild(Shape.rect(CGRect(x: -1.8, y: 3.5, width: 3.6, height: 3), radius: 0.5, fill: rgb(0.2, 0.25, 0.2)))
             strand.root.addChild(glow)
             strand.root.addChild(core)
             strand.bulbs.append(Bulb(core: core, glow: glow, x: bx, phase: .random(in: 0...6.28), speed: .random(in: 0.8...2.2), index: i))

@@ -196,8 +196,8 @@ enum Models3D {
     static func pineAspect(_ variant: Int) -> CGFloat { variant == 3 ? 0.74 : 0.62 }
 
     /// Snow-dusted pine. Variant 0: plain, 1: with tiny warm lights, 2: tall and slim, 3: short round fir.
-    static func pine(variant: Int, height: CGFloat) -> SKTexture {
-        let key = variant * 10_000 + Int(height)
+    static func pine(variant: Int, height: CGFloat, snowy: Bool = true) -> SKTexture {
+        let key = variant * 10_000 + Int(height) + (snowy ? 0 : 500_000)
         if let t = treeCache[key] { return t }
         let scene = SCNScene()
         scene.lightingEnvironment.contents = NSColor(calibratedWhite: 0.6, alpha: 1)
@@ -205,7 +205,7 @@ enum Models3D {
         let tree = SCNNode()
         scene.rootNode.addChildNode(tree)
         let slim: CGFloat = variant == 2 ? 0.75 : (variant == 3 ? 1.2 : 1)
-        let needles = pbr(rgb(0.09, 0.30, 0.17), rough: 0.85)
+        let needles = pbr(snowy ? rgb(0.09, 0.30, 0.17) : rgb(0.11, 0.36, 0.19), rough: 0.85)
         let snow = pbr(rgb(0.95, 0.97, 1), rough: 0.6)
         let trunk = SCNNode(geometry: SCNCylinder(radius: 0.08, height: 0.4))
         trunk.geometry?.firstMaterial = pbr(rgb(0.32, 0.2, 0.11), rough: 0.9)
@@ -220,10 +220,12 @@ enum Models3D {
             cone.geometry?.firstMaterial = needles
             cone.position = SCNVector3(0, y + h / 2, 0)
             tree.addChildNode(cone)
-            let cap = SCNNode(geometry: SCNCone(topRadius: 0, bottomRadius: r * slim * 0.72, height: h * 0.55))
-            cap.geometry?.firstMaterial = snow
-            cap.position = SCNVector3(0, y + h - h * 0.55 / 2 + 0.01, 0)
-            tree.addChildNode(cap)
+            if snowy {
+                let cap = SCNNode(geometry: SCNCone(topRadius: 0, bottomRadius: r * slim * 0.72, height: h * 0.55))
+                cap.geometry?.firstMaterial = snow
+                cap.position = SCNVector3(0, y + h - h * 0.55 / 2 + 0.01, 0)
+                tree.addChildNode(cap)
+            }
             for k in 0..<5 {
                 let a = CGFloat(k) / 5 * .pi + .random(in: -0.2...0.2)
                 let f = CGFloat.random(in: 0.1...0.45)
@@ -245,10 +247,7 @@ enum Models3D {
             star.position = SCNVector3(0, 2.08, 0)
             tree.addChildNode(star)
         }
-        let key2 = light(.directional, 800)
-        key2.eulerAngles = SCNVector3(-0.6, -0.6, 0)
-        scene.rootNode.addChildNode(key2)
-        scene.rootNode.addChildNode(light(.ambient, 260))
+        addTreeLights(scene)
         let cam = SCNNode()
         cam.camera = SCNCamera()
         cam.camera?.usesOrthographicProjection = true
@@ -258,6 +257,111 @@ enum Models3D {
         scene.rootNode.addChildNode(cam)
         let tex = render(scene, camera: cam, size: CGSize(width: height * pineAspect(variant), height: height))
         treeCache[key] = tex
+        return tex
+    }
+
+    /// Key light with soft self-shadowing, a cool rim from behind and ambient fill.
+    private static func addTreeLights(_ scene: SCNScene) {
+        let key = light(.directional, 850)
+        key.eulerAngles = SCNVector3(-0.6, -0.6, 0)
+        key.light?.castsShadow = true
+        key.light?.shadowRadius = 4
+        key.light?.shadowSampleCount = 8
+        key.light?.shadowColor = NSColor(calibratedWhite: 0, alpha: 0.45)
+        key.light?.orthographicScale = 2
+        key.light?.shadowMapSize = CGSize(width: 1024, height: 1024)
+        scene.rootNode.addChildNode(key)
+        let rim = light(.directional, 320, color: rgb(0.75, 0.85, 1))
+        rim.eulerAngles = SCNVector3(-0.3, 2.6, 0)
+        scene.rootNode.addChildNode(rim)
+        scene.rootNode.addChildNode(light(.ambient, 240))
+    }
+
+    // MARK: - Leafy trees
+
+    static let broadleafAspect: CGFloat = 0.82
+    private static var leafCache: [String: SKTexture] = [:]
+
+    /// A rounded leafy tree dressed for the season (bare, snowy branches in winter).
+    static func broadleaf(season: Season, variant: Int, height: CGFloat) -> SKTexture {
+        let key = "\(season.rawValue)-\(variant)-\(Int(height))"
+        if let t = leafCache[key] { return t }
+        // Repeatable pseudo-random numbers so each variant always looks the same.
+        var seed = UInt64(variant * 7919 + 17)
+        func rnd() -> CGFloat {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return CGFloat(seed >> 33) / CGFloat(UInt32.max >> 1)
+        }
+        let scene = SCNScene()
+        scene.lightingEnvironment.contents = NSColor(calibratedWhite: 0.6, alpha: 1)
+        scene.lightingEnvironment.intensity = 0.5
+        let tree = SCNNode()
+        scene.rootNode.addChildNode(tree)
+        let bark = pbr(rgb(0.33, 0.22, 0.14), rough: 0.95)
+        let trunk = SCNNode(geometry: SCNCone(topRadius: 0.06, bottomRadius: 0.11, height: 0.95))
+        trunk.geometry?.firstMaterial = bark
+        trunk.position = SCNVector3(0, 0.475, 0)
+        tree.addChildNode(trunk)
+        // Main branches
+        var tips: [SCNVector3] = []
+        for k in 0..<5 {
+            let a = CGFloat(k) / 5 * 2 * .pi + rnd()
+            let tilt = 0.3 + rnd() * 0.3
+            let len = 0.4 + rnd() * 0.2
+            let b = SCNNode(geometry: SCNCylinder(radius: 0.03, height: len))
+            b.geometry?.firstMaterial = bark
+            let base = SCNVector3(0, 0.75 + rnd() * 0.2, 0)
+            let dir = SCNVector3(cos(a) * sin(tilt), cos(tilt), sin(a) * sin(tilt))
+            b.position = SCNVector3(base.x + dir.x * len / 2, base.y + dir.y * len / 2, base.z + dir.z * len / 2)
+            b.look(at: SCNVector3(base.x + dir.x * len, base.y + dir.y * len, base.z + dir.z * len), up: SCNVector3(0, 1, 0), localFront: SCNVector3(0, 1, 0))
+            tree.addChildNode(b)
+            tips.append(SCNVector3(base.x + dir.x * len, base.y + dir.y * len, base.z + dir.z * len))
+        }
+        let colors: [NSColor]
+        switch season {
+        case .spring: colors = [rgb(0.98, 0.76, 0.84), rgb(1, 0.88, 0.92), rgb(0.95, 0.65, 0.78), rgb(0.55, 0.75, 0.4)]
+        case .summer: colors = [rgb(0.2, 0.5, 0.18), rgb(0.28, 0.58, 0.22), rgb(0.16, 0.42, 0.16)]
+        case .autumn: colors = [rgb(0.92, 0.45, 0.1), rgb(0.85, 0.25, 0.1), rgb(0.95, 0.7, 0.18), rgb(0.7, 0.35, 0.12)]
+        case .monsoon: colors = [rgb(0.1, 0.42, 0.18), rgb(0.14, 0.5, 0.2), rgb(0.08, 0.36, 0.15)]
+        case .winter: colors = []
+        }
+        if season == .winter {
+            let snow = pbr(rgb(0.95, 0.97, 1), rough: 0.6)
+            for p in tips {
+                let s = SCNNode(geometry: SCNSphere(radius: 0.05))
+                s.geometry?.firstMaterial = snow
+                s.position = p
+                tree.addChildNode(s)
+            }
+        } else {
+            // Canopy: overlapping leafy clumps around the branch tips and the crown.
+            let mats = colors.map { pbr($0, rough: 0.8) }
+            // A rounded crown: clumps scattered over an egg shape, plus the branch tips.
+            var clumps = tips + [SCNVector3(0, 1.62, 0), SCNVector3(0, 1.3, 0.25)]
+            for k in 0..<12 {
+                let a = CGFloat(k) / 12 * 2 * .pi + rnd() * 0.4
+                let up = 1.05 + rnd() * 0.6
+                let rad = 0.36 * sin(.pi * (up - 0.95) / 0.85) + 0.08
+                clumps.append(SCNVector3(cos(a) * rad, up, sin(a) * rad))
+            }
+            for (i, p) in clumps.enumerated() {
+                let s = SCNNode(geometry: SCNSphere(radius: 0.19 + rnd() * 0.1))
+                (s.geometry as? SCNSphere)?.segmentCount = 18
+                s.geometry?.firstMaterial = mats[i % mats.count]
+                s.position = p
+                s.scale = SCNVector3(1, 0.85, 1)
+                tree.addChildNode(s)
+            }
+        }
+        addTreeLights(scene)
+        let cam = SCNNode()
+        cam.camera = SCNCamera()
+        cam.camera?.usesOrthographicProjection = true
+        cam.camera?.orthographicScale = 1.02
+        cam.position = SCNVector3(0, 1.0, 10)
+        scene.rootNode.addChildNode(cam)
+        let tex = render(scene, camera: cam, size: CGSize(width: height * broadleafAspect, height: height))
+        leafCache[key] = tex
         return tex
     }
 }

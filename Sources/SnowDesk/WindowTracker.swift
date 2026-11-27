@@ -5,6 +5,7 @@ import CoreGraphics
 struct VisibleWindow {
     let id: CGWindowID
     let rect: CGRect
+    var pid: pid_t = 0
 }
 
 enum WindowTracker {
@@ -32,7 +33,7 @@ enum WindowTracker {
             if alpha < 0.05 || cg.width < 80 || cg.height < 40 { continue }
             // CG global coords are top-left origin; flip into the main screen's bottom-left space.
             let rect = CGRect(x: cg.minX, y: screenHeight - cg.maxY, width: cg.width, height: cg.height)
-            result.append(VisibleWindow(id: num, rect: rect))
+            result.append(VisibleWindow(id: num, rect: rect, pid: info[kCGWindowOwnerPID as String] as? pid_t ?? 0))
         }
         return result
     }

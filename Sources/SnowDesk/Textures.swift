@@ -170,3 +170,56 @@ func glowSprite(_ color: NSColor, size: CGFloat, alpha: CGFloat = 1) -> SKSprite
     s.alpha = alpha
     return s
 }
+
+/// Draws vector shape nodes once into a texture. SKShapeNode re-tessellates its path (and strokes) every frame,
+/// which is the biggest CPU cost here; a baked sprite costs almost nothing. Identical parts share one texture via `key`.
+enum Bake {
+    private static let view = SKView(frame: NSRect(x: 0, y: 0, width: 8, height: 8))
+    private static var cache: [String: (texture: SKTexture, frame: CGRect)] = [:]
+
+    /// A sprite that looks like `node` (its local origin kept, so rotations still pivot in the same place).
+    static func sprite(_ node: SKNode, key: String? = nil) -> SKSpriteNode {
+        let baked: (texture: SKTexture, frame: CGRect)?
+        if let key, let c = cache[key] { baked = c } else {
+            baked = render(node)
+            if let key, let b = baked { cache[key] = b }
+        }
+        guard let (tex, f) = baked else { return SKSpriteNode(color: .clear, size: CGSize(width: 1, height: 1)) }
+        let s = SKSpriteNode(texture: tex, size: f.size)
+        s.anchorPoint = CGPoint(x: -f.minX / f.width, y: -f.minY / f.height)
+        return s
+    }
+
+    private static func render(_ node: SKNode) -> (texture: SKTexture, frame: CGRect)? {
+        node.removeFromParent()
+        let f = node.calculateAccumulatedFrame().insetBy(dx: -1.5, dy: -1.5).integral
+        guard f.width > 0, f.height > 0, f.width < 4000, f.height < 4000 else { return nil }
+        let holder = SKNode()
+        holder.setScale(2)                         // render at Retina resolution
+        holder.addChild(node)
+        defer { node.removeFromParent() }
+        let crop = CGRect(x: f.minX * 2, y: f.minY * 2, width: f.width * 2, height: f.height * 2)
+        guard let tex = view.texture(from: holder, crop: crop) else { return nil }
+        return (tex, f)
+    }
+}
+
+/// Safely throws away a window that hosts an SKView. SpriteKit's display-link queue can still hold blocks that
+/// point at the view; releasing it right away crashed the app (EXC_BAD_ACCESS in SKDisplayLinkControlQueue).
+/// So: pause it, detach the scene, hide it, and only let it go a few seconds later.
+enum Retire {
+    private static var graveyard: [NSWindow] = []
+
+    static func window(_ w: NSWindow?) {
+        guard let w else { return }
+        if let v = w.contentView as? SKView {
+            v.isPaused = true
+            v.presentScene(nil)
+        }
+        w.orderOut(nil)
+        graveyard.append(w)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
+            graveyard.removeAll { $0 === w }
+        }
+    }
+}

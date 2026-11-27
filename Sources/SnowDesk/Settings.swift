@@ -12,21 +12,51 @@ enum Intensity: Int, CaseIterable {
     }
 
     var flakeCount: Int {
+        let base: CGFloat
         switch self {
-        case .light: return 160
-        case .medium: return 380
-        case .heavy: return 800
+        case .light: base = 160
+        case .medium: base = 380
+        case .heavy: base = 800
         }
+        return Int(base * Performance.current.particles)
     }
 
     /// Multiplier for other weather (rain drops, leaves...).
     var factor: CGFloat {
+        let base: CGFloat
         switch self {
-        case .light: return 0.5
-        case .medium: return 1
-        case .heavy: return 1.8
+        case .light: base = 0.5
+        case .medium: base = 1
+        case .heavy: base = 1.8
+        }
+        return base * Performance.current.particles
+    }
+}
+
+/// How hard SnowDesk works. Battery Saver is used automatically in macOS Low Power Mode.
+enum Performance: Int, CaseIterable {
+    case saver = 0, balanced, smooth
+
+    var title: String {
+        switch self {
+        case .saver: return "Battery Saver (lightest)"
+        case .balanced: return "Balanced"
+        case .smooth: return "Extra Smooth (60 fps)"
         }
     }
+
+    var fps: Int { self == .smooth ? 60 : 30 }
+    /// How often window positions are read (a system call that isn't free).
+    var poll: TimeInterval { self == .saver ? 1.0 / 8 : (self == .balanced ? 1.0 / 15 : 1.0 / 30) }
+    /// Share of snowflakes, raindrops and leaves.
+    var particles: CGFloat { self == .saver ? 0.5 : 1 }
+
+    static var chosen: Performance {
+        get { Performance(rawValue: UserDefaults.standard.object(forKey: "performance") as? Int ?? 1) ?? .balanced }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "performance") }
+    }
+
+    static var current: Performance { ProcessInfo.processInfo.isLowPowerModeEnabled ? .saver : chosen }
 }
 
 enum LightsMode: Int, CaseIterable {
