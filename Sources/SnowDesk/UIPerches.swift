@@ -35,13 +35,14 @@ enum UIPerches {
         guard allowed else { return [] }
         var out: [UISpot] = []
         let now = Date()
+        let primaryH = NSScreen.screens.first?.frame.height ?? 0      // read on the main thread
         for w in windows.prefix(4) where w.pid > 0 {
             if let c = cache[w.id], c.rect == w.rect { out += c.spots }
             let stale = cache[w.id].map { now.timeIntervalSince($0.time) > 6 || $0.rect != w.rect } ?? true
             if stale && !pending.contains(w.id) {
                 pending.insert(w.id)
                 queue.async {
-                    let found = scan(w)
+                    let found = scan(w, primaryH: primaryH)
                     DispatchQueue.main.async {
                         cache[w.id] = (Date(), w.rect, found)
                         pending.remove(w.id)
@@ -76,10 +77,9 @@ enum UIPerches {
     }
 
     /// Walks one window's element tree (bounded) and collects ledges.
-    private static func scan(_ w: VisibleWindow) -> [UISpot] {
+    private static func scan(_ w: VisibleWindow, primaryH: CGFloat) -> [UISpot] {
         let app = AXUIElementCreateApplication(w.pid)
         AXUIElementSetMessagingTimeout(app, 0.25)
-        let primaryH = NSScreen.screens.first?.frame.height ?? 0
         // The window in AX coordinates, to match against.
         let want = CGRect(x: w.rect.minX, y: primaryH - w.rect.maxY, width: w.rect.width, height: w.rect.height)
         guard let wins = attr(app, kAXWindowsAttribute) as? [AXUIElement],

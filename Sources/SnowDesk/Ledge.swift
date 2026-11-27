@@ -41,6 +41,7 @@ extension SnowScene {
             guard r.width > 120, r.maxY < size.height - (hang ? 10 : 34), r.maxY > 60 else { continue }
             for _ in 0..<3 {
                 let lx = CGFloat.random(in: 24...(r.width - 24))
+                guard r.minX + lx > 10, r.minX + lx < size.width - 10 else { continue }     // on this display
                 let g = CGPoint(x: r.minX + lx + originX, y: r.maxY + originY + (hang ? -3 : 3))
                 guard !covered(g, ownerIndex: i) else { continue }
                 if !hang, let c = w.pile.column(forLocalX: lx), !w.pile.exposed[c] { continue }

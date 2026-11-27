@@ -76,7 +76,8 @@ extension SnowScene {
     func setScenery(_ s: Set<Scenery>) {
         if s.contains(.birds) { if live(BirdsEffect.self) == nil { add(BirdsEffect(scene: self)) } } else { live(BirdsEffect.self)?.finish() }
         if s.contains(.butterflies) { if live(ButterfliesEffect.self) == nil { add(ButterfliesEffect(scene: self)) } } else { live(ButterfliesEffect.self)?.finish() }
-        if s.contains(.bats) { if live(BatsEffect.self) == nil { add(BatsEffect(scene: self)) } } else { live(BatsEffect.self)?.finish() }
+        let menuBats = effects.compactMap { $0 as? BatsEffect }.first { !$0.isFinishing && !$0.eventOwned }
+        if s.contains(.bats) { if menuBats == nil { add(BatsEffect(scene: self)) } } else { menuBats?.finish() }
         let ski = s.contains(.skiers), sled = s.contains(.sledders)
         if let r = live(RidersEffect.self) {
             r.skiers = ski
@@ -100,6 +101,15 @@ extension SnowScene {
             return r
         }()
         r.send(kind, scene: self)
+    }
+
+    /// A perched object whose window went away lands on the ground under where it was.
+    func dropToGround(_ p: Perched) {
+        let x = min(max(p.node.position.x, 10), size.width - 10)
+        p.windowID = nil
+        p.localX = x
+        p.yOffset = ground.column(forLocalX: x).map { ground.height(at: $0) } ?? 0
+        p.node.isHidden = false
     }
 
     var snowmen: SnowmanBuilds {

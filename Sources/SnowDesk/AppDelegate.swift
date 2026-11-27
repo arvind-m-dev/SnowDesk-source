@@ -313,6 +313,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func applyDecor() {
         if ProcessInfo.processInfo.arguments.contains("--skip-decor") { return }
         decor.apply(fire: settings.fireplace, trees: settings.treeStyle, river: settings.scenery.contains(.river), season: settings.season)
+        decor.setHidden(hiddenAll)
+        decor.setPaused(hiddenAll || asleep)
         primary?.setFireWarmth(at: decor.fireX.map { $0 + (Displays.home?.frame.minX ?? 0) })
     }
 
@@ -536,6 +538,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func pickWeather(_ sender: NSMenuItem) {
         let k = WeatherKind.allCases[sender.tag]
+        UserDefaults.standard.removeObject(forKey: "weathersBeforeEvent")      // the user's own choice now wins
         if WeatherService.shared.isFollowing { WeatherService.shared.stop() }
         var set = settings.weathers
         if k == .clear {
@@ -627,9 +630,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func applyEvent(_ ev: EventKind?) {
         scenes.forEach { $0.setEvent(ev) }
-        guard let ev else { return }
-        if let w = ev.weathers { setWeathers(w) }
+        let ud = UserDefaults.standard
+        guard let ev else {
+            // The festival is over: put back the weather and lights it replaced.
+            if let saved = ud.array(forKey: "weathersBeforeEvent") as? [String] {
+                setWeathers(Set(saved.compactMap(WeatherKind.init(rawValue:))))
+                ud.removeObject(forKey: "weathersBeforeEvent")
+            }
+            if ud.object(forKey: "lightsBeforeEvent") != nil {
+                let m = LightsMode(rawValue: ud.integer(forKey: "lightsBeforeEvent")) ?? .off
+                settings.lightsMode = m
+                scenes.forEach { $0.setLights(m) }
+                ud.removeObject(forKey: "lightsBeforeEvent")
+            }
+            return
+        }
+        if let w = ev.weathers {
+            if ud.object(forKey: "weathersBeforeEvent") == nil { ud.set(settings.weathers.map(\.rawValue), forKey: "weathersBeforeEvent") }
+            setWeathers(w)
+        }
         if ev == .christmas && settings.lightsMode == .off {
+            if ud.object(forKey: "lightsBeforeEvent") == nil { ud.set(settings.lightsMode.rawValue, forKey: "lightsBeforeEvent") }
             settings.lightsMode = .twinkle
             scenes.forEach { $0.setLights(.twinkle) }
         }
@@ -747,6 +768,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func setLights(_ sender: NSMenuItem) {
         guard let m = LightsMode(rawValue: sender.tag) else { return }
+        UserDefaults.standard.removeObject(forKey: "lightsBeforeEvent")
         settings.lightsMode = m
         scenes.forEach { $0.setLights(m) }
     }

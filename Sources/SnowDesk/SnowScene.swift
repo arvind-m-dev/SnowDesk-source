@@ -694,7 +694,7 @@ final class SnowScene: SKScene {
     private func updateGrab(dt: CGFloat) {
         let cmd = commandHeld
         let near = cursorInside ? perched(at: cursor, slack: cmd ? 4 : 36) : nil
-        for p in perched where p !== grabbed {
+        for p in perched where p !== grabbed && !p.node.hasActions() {     // leave its own fades alone
             let target: CGFloat = (p === near && !cmd) ? 0.22 : 1
             p.node.alpha += (target - p.node.alpha) * min(1, dt * 10)
         }

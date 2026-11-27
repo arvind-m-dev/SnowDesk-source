@@ -76,6 +76,8 @@ final class BatsEffect: SceneEffect, Finishable {
     private var finishing = false
     var isFinishing: Bool { finishing }
     let population: Int
+    /// Belongs to a festival (Halloween), not to the Nature menu's Bats switch.
+    var eventOwned = false
     private var nextSpawn: TimeInterval = 0
 
     init(scene: SnowScene, population: Int = 4) {

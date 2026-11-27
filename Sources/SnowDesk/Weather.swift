@@ -286,7 +286,7 @@ final class AmbientWeather: SceneEffect {
             root.addChild(r)
             let d = Double.random(in: 0.5...0.8)
             r.run(.sequence([.group([.scale(to: .random(in: 3...5), duration: d), .fadeOut(withDuration: d)]),
-                             .removeFromParent(), .run { [weak self] in self?.ripples -= 1 }]))
+                             .run { [weak self] in self?.ripples -= 1 }, .removeFromParent()]))
         }
         for _ in 0..<(kind == .storm ? 3 : 2) {
             let s = SKSpriteNode(texture: Tex.glow, size: CGSize(width: 3, height: 3))

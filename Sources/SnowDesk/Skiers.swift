@@ -63,7 +63,9 @@ final class RidersEffect: SceneEffect, Finishable {
         let dir: CGFloat = Bool.random() ? 1 : -1
         var start = CGPoint(x: dir > 0 ? -30 : scene.size.width + 30, y: 0)
         // Half the time, start on top of a window so it can ski off the end.
-        let ledges = scene.visibleWindows.filter { $0.rect.width > 240 && $0.rect.maxY < scene.size.height - 60 }
+        let ledges = scene.visibleWindows.filter {
+            $0.rect.width > 240 && $0.rect.maxY < scene.size.height - 60 && $0.rect.minX >= 0 && $0.rect.maxX <= scene.size.width
+        }
         if Bool.random(), let w = ledges.randomElement() {
             start = CGPoint(x: dir > 0 ? w.rect.minX + 12 : w.rect.maxX - 12, y: w.rect.maxY + 40)
         } else {

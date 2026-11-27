@@ -60,6 +60,7 @@ final class SnowmanBuilds: SceneEffect {
         scene.addChild(b.root)
         let c = scene.ground.column(forLocalX: gx) ?? 0
         b.perch = Perched(node: b.root, windowID: nil, localX: gx, yOffset: scene.ground.height(at: c))
+        b.perch.onDislodge = { [weak b, weak scene] in if let b, let scene { scene.dropToGround(b.perch) } }
         scene.perch(b.perch)
         built.append(b)
         Sound.shared.play(.chime, volume: 0.6)

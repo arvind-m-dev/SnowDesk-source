@@ -8,9 +8,10 @@ final class EventEffect: SceneEffect, Finishable {
     var isFinishing: Bool { finishing }
     private var props: [Perched] = []
 
-    private struct Spark { let node: SKSpriteNode; var v: CGVector; var life: CGFloat; let total: CGFloat; let drag: CGFloat; let gravity: CGFloat }
+    private struct Spark { let node: SKSpriteNode; var v: CGVector; var life: CGFloat; let total: CGFloat; let drag: CGFloat; let gravity: CGFloat; var crackle = false }
     private var sparks: [Spark] = []
-    private struct Rocket { let node: SKSpriteNode; var v: CGVector; var fuse: CGFloat; let color: [NSColor] }
+    private struct Rocket { let node: SKSpriteNode; var v: CGVector; var fuse: CGFloat; let color: [NSColor]; var small = false }
+    private let rocketGravity: CGFloat = 420
     private var rockets: [Rocket] = []
     private final class Flier { let node: SKNode; var v: CGVector; let phase: CGFloat; var life: CGFloat; let parts: [SKNode]
         init(node: SKNode, v: CGVector, life: CGFloat, parts: [SKNode] = []) { self.node = node; self.v = v; self.life = life; self.parts = parts; phase = .random(in: 0...6.28) } }
@@ -30,6 +31,7 @@ final class EventEffect: SceneEffect, Finishable {
         case .halloween:
             placeAlongGround(scene, spacing: 260) { self.pumpkin(size: .random(in: 26...40)) }
             let b = BatsEffect(scene: scene, population: 7)
+            b.eventOwned = true
             scene.add(b)
             bats = b
         case .easter: placeAlongGround(scene, spacing: 170) { self.egg() }
@@ -134,60 +136,125 @@ final class EventEffect: SceneEffect, Finishable {
 
     // MARK: Fireworks
 
+    /// A rocket aimed to peak (and burst) in the middle band of the screen, never off the top.
     private func launch(_ scene: SnowScene) {
+        let w = scene.size.width, h = scene.size.height
         let s = glowSprite(rgb(1, 0.9, 0.7), size: 10)
-        s.position = CGPoint(x: .random(in: (scene.size.width * 0.1)...(scene.size.width * 0.9)), y: -10)
+        s.position = CGPoint(x: .random(in: (w * 0.12)...(w * 0.88)), y: -10)
         root.addChild(s)
+        let peak = CGFloat.random(in: (h * 0.4)...(h * 0.66))
+        let vy = sqrt(2 * rocketGravity * (peak - s.position.y))      // just enough speed to reach the peak
         let colors = palette().shuffled()
-        rockets.append(Rocket(node: s, v: CGVector(dx: .random(in: -40...40), dy: .random(in: 520...760)), fuse: .random(in: 1...1.5),
+        rockets.append(Rocket(node: s, v: CGVector(dx: .random(in: -30...30), dy: vy), fuse: vy / rocketGravity,
                               color: Array(colors.prefix(Int.random(in: 1...2)))))
+        Sound.shared.play(.pop, volume: 0.12)
     }
 
     private func stepRockets(dt: CGFloat) {
-        rockets = rockets.filter { r in
-            var r = r
+        var i = 0
+        while i < rockets.count {
+            var r = rockets[i]
             r.fuse -= dt
-            r.v.dy -= 260 * dt
+            r.v.dy -= (r.small ? 160 : rocketGravity) * dt
             r.node.position.x += r.v.dx * dt
             r.node.position.y += r.v.dy * dt
-            if Int.random(in: 0..<2) == 0 {      // trail
-                addSpark(at: r.node.position, v: CGVector(dx: .random(in: -15...15), dy: -.random(in: 20...60)), color: rgb(1, 0.8, 0.5), size: 3, life: 0.4, gravity: 60)
+            if Int.random(in: 0..<(r.small ? 3 : 2)) == 0 {      // sparkling trail
+                addSpark(at: r.node.position, v: CGVector(dx: .random(in: -15...15), dy: -.random(in: 20...60)), color: rgb(1, 0.8, 0.5),
+                         size: r.small ? 2 : 3, life: 0.4, gravity: 60)
             }
             if r.fuse <= 0 {
-                burst(at: r.node.position, colors: r.color)
+                if r.small { smallBurst(at: r.node.position, color: r.color[0]) } else { burst(at: r.node.position, colors: r.color) }
                 r.node.removeFromParent()
-                return false
+                rockets.remove(at: i)          // (a crossette burst may have appended new rockets; they're stepped next frame)
+                continue
             }
-            return true
+            rockets[i] = r                     // write back: the struct is a copy
+            i += 1
         }
     }
 
+    private enum Shell: CaseIterable { case peony, ring, willow, crossette, crackle }
+
+    /// The main blast: a bright flash and shockwave, then one of several shell patterns sized to the screen.
     private func burst(at p: CGPoint, colors: [NSColor]) {
-        guard sparks.count < 900 else { return }
-        Sound.shared.play(.pop, volume: 0.35)
-        let n = Int.random(in: 50...80)
-        let speed = CGFloat.random(in: 160...260)
-        let ring = Bool.random()
-        for i in 0..<n {
-            let a = CGFloat(i) / CGFloat(n) * 2 * .pi + .random(in: -0.05...0.05)
-            let sp = ring ? speed : speed * .random(in: 0.3...1)
-            addSpark(at: p, v: CGVector(dx: cos(a) * sp, dy: sin(a) * sp), color: colors[i % colors.count], size: .random(in: 4...7),
-                     life: .random(in: 1.2...2), gravity: 90, drag: 1.4)
-        }
-        let flash = glowSprite(colors[0], size: 160, alpha: 0.6)
+        guard sparks.count < 1100, let scene = root.scene else { return }
+        Sound.shared.play(.pop, volume: 0.45)
+        let radius = min(scene.size.width, scene.size.height) * .random(in: 0.13...0.2)
+        let shell = Shell.allCases.randomElement()!
+        let drag: CGFloat = 2.2
+        let speed = radius * drag                               // with this drag, sparks coast out to about `radius`
+
+        // Flash, wide glow and an expanding shockwave ring.
+        let flash = glowSprite(.white, size: radius * 0.9, alpha: 0.95)
         flash.position = p
         root.addChild(flash)
-        flash.run(.sequence([.group([.scale(to: 1.6, duration: 0.3), .fadeOut(withDuration: 0.3)]), .removeFromParent()]))
+        flash.run(.sequence([.group([.scale(to: 1.5, duration: 0.18), .fadeOut(withDuration: 0.25)]), .removeFromParent()]))
+        let wash = glowSprite(colors[0], size: radius * 4, alpha: 0.22)
+        wash.position = p
+        root.addChild(wash)
+        wash.run(.sequence([.fadeOut(withDuration: 0.6), .removeFromParent()]))
+        let ring = Shape.ellipse(CGRect(x: -10, y: -10, width: 20, height: 20), fill: nil, stroke: NSColor.white.withAlphaComponent(0.45), line: 0.8)
+        let shock = Bake.sprite(ring, key: "shock")
+        shock.color = colors[0]
+        shock.colorBlendFactor = 1
+        shock.position = p
+        root.addChild(shock)
+        shock.run(.sequence([.group([.scale(to: radius / 9, duration: 0.45), .fadeOut(withDuration: 0.45)]), .removeFromParent()]))
+
+        switch shell {
+        case .peony, .crackle:
+            for i in 0..<95 {
+                let a = CGFloat.random(in: 0...(2 * .pi)), sp = speed * sqrt(.random(in: 0.15...1))
+                addSpark(at: p, v: CGVector(dx: cos(a) * sp, dy: sin(a) * sp), color: colors[i % colors.count], size: .random(in: 7...12),
+                         life: .random(in: 1.3...2.1), gravity: 70, drag: drag, crackle: shell == .crackle)
+            }
+        case .ring:
+            for (k, scale) in [(0, CGFloat(1)), (1, 0.55)] {
+                let n = k == 0 ? 56 : 30
+                for i in 0..<n {
+                    let a = CGFloat(i) / CGFloat(n) * 2 * .pi
+                    addSpark(at: p, v: CGVector(dx: cos(a) * speed * scale, dy: sin(a) * speed * scale), color: colors[(i + k) % colors.count],
+                             size: 9, life: .random(in: 1.3...1.8), gravity: 60, drag: drag)
+                }
+            }
+        case .willow:                                            // long golden trails that droop down
+            for _ in 0..<60 {
+                let a = CGFloat.random(in: 0...(2 * .pi)), sp = speed * .random(in: 0.5...0.9)
+                addSpark(at: p, v: CGVector(dx: cos(a) * sp, dy: sin(a) * sp + 40), color: rgb(1, 0.78, 0.35), size: .random(in: 6...9),
+                         life: .random(in: 2.4...3.2), gravity: 120, drag: 2.6)
+            }
+        case .crossette:                                         // a few stars that split again
+            for i in 0..<6 {
+                let a = CGFloat(i) / 6 * 2 * .pi + .random(in: -0.2...0.2)
+                let st = glowSprite(colors[i % colors.count], size: 8)
+                st.position = p
+                root.addChild(st)
+                rockets.append(Rocket(node: st, v: CGVector(dx: cos(a) * speed * 0.7, dy: sin(a) * speed * 0.7), fuse: .random(in: 0.4...0.55),
+                                      color: [colors[i % colors.count]], small: true))
+            }
+            for i in 0..<30 {
+                let a = CGFloat.random(in: 0...(2 * .pi)), sp = speed * .random(in: 0.2...0.6)
+                addSpark(at: p, v: CGVector(dx: cos(a) * sp, dy: sin(a) * sp), color: colors[i % colors.count], size: 7, life: 1.0, gravity: 70, drag: drag)
+            }
+        }
     }
 
-    private func addSpark(at p: CGPoint, v: CGVector, color: NSColor, size: CGFloat, life: CGFloat, gravity: CGFloat, drag: CGFloat = 0.5, additive: Bool = true) {
+    private func smallBurst(at p: CGPoint, color: NSColor) {
+        for _ in 0..<14 {
+            let a = CGFloat.random(in: 0...(2 * .pi)), sp = CGFloat.random(in: 120...200)
+            addSpark(at: p, v: CGVector(dx: cos(a) * sp, dy: sin(a) * sp), color: color, size: 7, life: .random(in: 0.7...1.1), gravity: 80, drag: 2.4)
+        }
+    }
+
+    private func addSpark(at p: CGPoint, v: CGVector, color: NSColor, size: CGFloat, life: CGFloat, gravity: CGFloat, drag: CGFloat = 0.5,
+                          additive: Bool = true, crackle: Bool = false) {
         let s = SKSpriteNode(texture: Tex.glow, size: CGSize(width: size, height: size))
         s.color = color
         s.colorBlendFactor = 1
         s.blendMode = additive ? .add : .alpha
         s.position = p
         root.addChild(s)
-        sparks.append(Spark(node: s, v: v, life: life, total: life, drag: drag, gravity: gravity))
+        sparks.append(Spark(node: s, v: v, life: life, total: life, drag: drag, gravity: gravity, crackle: crackle))
     }
 
     private func stepSparks(dt: CGFloat) {
@@ -208,6 +275,7 @@ final class EventEffect: SceneEffect, Finishable {
             s.node.position.y += s.v.dy * dt
             let f = s.life / s.total
             s.node.alpha = f < 0.3 ? f / 0.3 * (0.6 + 0.4 * CGFloat.random(in: 0...1)) : 1
+            if s.crackle && f < 0.55 { s.node.alpha = Bool.random() ? 1 : 0.1 }      // glittering strobe at the end
             sparks[i] = s
             i += 1
         }
@@ -236,6 +304,7 @@ final class EventEffect: SceneEffect, Finishable {
             root.addChild(n)
             let c = scene.ground.column(forLocalX: x) ?? 0
             let p = Perched(node: n, windowID: nil, localX: x, yOffset: scene.ground.height(at: c))
+            p.onDislodge = { [weak p, weak scene] in if let p, let scene { scene.dropToGround(p) } }
             scene.perch(p)
             props.append(p)
             x += spacing * .random(in: 0.7...1.3)
